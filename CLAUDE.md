@@ -8,43 +8,58 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
+**CRITICAL**: This project uses a virtual environment. ALWAYS use `source bin/activate && python` and `source bin/activate && pip`. NEVER use `python3` or `pip3` directly - these are system executables and we always use the virtual environment.
+
 ### Environment Setup
 ```bash
-# Create virtual environment (if not exists)
-python3 -m venv .
+# Virtual environment is already set up in this project
 
-# Activate virtual environment and install in development mode
+# Option 1: Install from requirements files
+source bin/activate && pip install -r requirements.txt
+source bin/activate && pip install -r dev-requirements.txt
+
+# Option 2: Install in development mode (includes all dependencies)
 source bin/activate && pip install -e ".[dev]"
+
+# Note: requirements.txt includes mazza-base from private GitHub repo
+# This requires CR_PAT environment variable to be set
+# export CR_PAT=your_github_token
 ```
 
 ### Running Tests
 ```bash
 # Run all tests
-source bin/activate && pytest
+source bin/activate && python -m pytest
 
 # Run with coverage
-source bin/activate && pytest --cov=byteforge_telegram
+source bin/activate && python -m pytest --cov=byteforge_telegram
 
 # Run a single test file
-source bin/activate && pytest tests/test_notifier.py
+source bin/activate && python -m pytest tests/test_notifier.py
 
 # Run a specific test
-source bin/activate && pytest tests/test_notifier.py::test_send_message
+source bin/activate && python -m pytest tests/test_notifier.py::test_send_message
 ```
 
 ### Code Formatting
 ```bash
 # Format code with Black (line length: 100)
-source bin/activate && black src/
+source bin/activate && python -m black src/
 
 # Check formatting without making changes
-source bin/activate && black --check src/
+source bin/activate && python -m black --check src/
+
+# Sort imports with isort
+source bin/activate && python -m isort src/
+
+# Check import sorting without making changes
+source bin/activate && python -m isort --check-only src/
 ```
 
 ### Type Checking
 ```bash
 # Run mypy type checker
-source bin/activate && mypy src/
+source bin/activate && python -m mypy src/
 ```
 
 ### Building and Publishing
@@ -169,9 +184,18 @@ src/byteforge_telegram/
 
 ## Dependencies
 
-- `python-telegram-bot>=20.0` - Core Telegram API wrapper
+**Production (requirements.txt):**
+- `python-telegram-bot` - Core Telegram API wrapper
+- `mazza-base` - Mazza base library from private GitHub repo (requires CR_PAT env var)
+
+**Development (dev-requirements.txt):**
+- `mypy` - Type checking
+- `black` - Code formatting
+- `isort` - Import sorting
+
+**Additional from pyproject.toml:**
 - `requests>=2.31.0` - HTTP client for webhook management
-- Dev: `pytest`, `pytest-asyncio`, `black`, `mypy`
+- Dev: `pytest`, `pytest-asyncio`
 
 ## Testing Notes
 
@@ -179,7 +203,8 @@ src/byteforge_telegram/
 - When adding tests, use `pytest-asyncio` for async test support
 - Test both sync and async methods
 - Mock Telegram API calls to avoid real API usage
-- After making changes, always run pytest BEFORE committing code
+- **CRITICAL**: After making changes, always run `source bin/activate && python -m pytest` BEFORE committing code
+- Remember: NEVER use `python3` - always use the venv with `source bin/activate && python`
 
 ## Version Management
 
