@@ -1,0 +1,2 @@
+python-telegram-bot
+mazza-base @ git+https://${CR_PAT}@github.com/mazza-vc/python-mazza-base.git@main
