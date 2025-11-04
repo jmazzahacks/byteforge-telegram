@@ -202,6 +202,7 @@ return jsonify(response.to_dict()), 200
 ### Integration with Flask (Simple)
 
 ```python
+import os
 from flask import Flask, request, jsonify
 from byteforge_telegram import TelegramBotController
 
