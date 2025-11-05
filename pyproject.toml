@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "Jason Byteforge", email = "jmazzahacks@gmail.com"}
+    {name = "Jason Byteforge"}
 ]
 keywords = ["telegram", "bot", "notifications", "webhook"]
 classifiers = [
