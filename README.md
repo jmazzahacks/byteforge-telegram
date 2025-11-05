@@ -335,7 +335,7 @@ Each message send creates a new Bot instance and properly cleans up the HTTP ses
 
 ```bash
 # Clone repository
-git clone https://github.com/byteforge/byteforge-telegram.git
+git clone https://github.com/jmazzahacks/byteforge-telegram.git
 cd byteforge-telegram
 
 # Install in development mode
@@ -369,6 +369,6 @@ Jason Byteforge (@jmazzahacks)
 
 ## Links
 
-- GitHub: https://github.com/byteforge/byteforge-telegram
-- Issues: https://github.com/byteforge/byteforge-telegram/issues
+- GitHub: https://github.com/jmazzahacks/byteforge-telegram
+- Issues: https://github.com/jmazzahacks/byteforge-telegram/issues
 - PyPI: https://pypi.org/project/byteforge-telegram/

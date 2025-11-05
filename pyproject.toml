@@ -43,9 +43,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/byteforge/byteforge-telegram"
-Repository = "https://github.com/byteforge/byteforge-telegram"
-Issues = "https://github.com/byteforge/byteforge-telegram/issues"
+Homepage = "https://github.com/jmazzahacks/byteforge-telegram"
+Repository = "https://github.com/jmazzahacks/byteforge-telegram"
+Issues = "https://github.com/jmazzahacks/byteforge-telegram/issues"
 
 [project.scripts]
 setup-telegram-webhook = "byteforge_telegram.cli:main"
