@@ -26,7 +26,7 @@ pip install byteforge-telegram
 Or install from source:
 
 ```bash
-git clone https://github.com/byteforge/byteforge-telegram.git
+git clone https://github.com/jmazzahacks/byteforge-telegram.git
 cd byteforge-telegram
 pip install -e .
 ```
@@ -338,8 +338,15 @@ Each message send creates a new Bot instance and properly cleans up the HTTP ses
 git clone https://github.com/jmazzahacks/byteforge-telegram.git
 cd byteforge-telegram
 
-# Install in development mode
-pip install -e ".[dev]"
+# Create and activate virtual environment
+python3 -m venv .
+source bin/activate
+
+# Install development dependencies
+pip install -r dev-requirements.txt
+
+# Install package in development mode
+pip install -e .
 
 # Run tests
 pytest
@@ -351,8 +358,14 @@ black src/
 ### Running Tests
 
 ```bash
-pytest
-pytest --cov=byteforge_telegram  # With coverage
+# Run all tests
+source bin/activate && pytest
+
+# Run with coverage
+source bin/activate && pytest --cov=byteforge_telegram
+
+# Run specific test file
+source bin/activate && pytest tests/test_models.py
 ```
 
 ## License
