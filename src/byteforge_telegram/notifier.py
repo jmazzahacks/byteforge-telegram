@@ -72,10 +72,12 @@ class TelegramBotController:
                     close = getattr(session, "close", None)
                     if callable(aclose):
                         await aclose()
+                        logger.debug("Bot session closed (async)")
                     elif callable(close):
                         close()
-            except Exception:
-                pass
+                        logger.debug("Bot session closed (sync)")
+            except Exception as e:
+                logger.warning(f"Failed to close bot session: {e}")
         return results
 
     async def send_message(
@@ -126,7 +128,7 @@ class TelegramBotController:
                     )
                 )
         except Exception as e:
-            logger.error(f"Error in send_message_sync: {e}")
+            logger.error(f"Error in send_message_sync (chat_ids={len(chat_ids)}): {e}")
             return {cid: False for cid in chat_ids}
 
     async def send_formatted(
@@ -185,7 +187,7 @@ class TelegramBotController:
                     )
                 )
         except Exception as e:
-            logger.error(f"Error in send_formatted_sync: {e}")
+            logger.error(f"Error in send_formatted_sync (chat_ids={len(chat_ids)}): {e}")
             return {cid: False for cid in chat_ids}
 
     async def test_connection(self, chat_id: str) -> bool:
@@ -201,5 +203,5 @@ class TelegramBotController:
             except RuntimeError:
                 return asyncio.run(self.test_connection(chat_id))
         except Exception as e:
-            logger.error(f"Error in test_connection_sync: {e}")
+            logger.error(f"Error in test_connection_sync (chat_id={chat_id}): {e}")
             return False
