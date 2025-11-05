@@ -30,7 +30,7 @@ class TelegramBotController:
         if not bot_token:
             raise ValueError("bot_token is required")
         self.bot_token = bot_token
-        logger.info("Telegram bot controller initialized")
+        logger.debug("Telegram bot controller initialized")
 
     async def _send_with_new_bot(
         self,
