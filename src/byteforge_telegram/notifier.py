@@ -8,6 +8,7 @@ import logging
 from typing import Optional, List, Dict, Any
 from enum import Enum
 import asyncio
+import concurrent.futures
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -104,10 +105,17 @@ class TelegramBotController:
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
     ) -> Dict[str, bool]:
+        """
+        Synchronously send a message, blocking until completion.
+
+        Works correctly in both sync and async contexts by running
+        in a separate thread to avoid event loop conflicts.
+        """
         try:
-            try:
-                asyncio.get_running_loop()
-                asyncio.create_task(
+            # Always use a thread pool to run asyncio.run() to avoid event loop conflicts
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
                     self.send_message(
                         text=text,
                         chat_ids=chat_ids,
@@ -116,17 +124,7 @@ class TelegramBotController:
                         disable_notification=disable_notification,
                     )
                 )
-                return {cid: True for cid in chat_ids}
-            except RuntimeError:
-                return asyncio.run(
-                    self.send_message(
-                        text=text,
-                        chat_ids=chat_ids,
-                        parse_mode=parse_mode,
-                        disable_web_page_preview=disable_web_page_preview,
-                        disable_notification=disable_notification,
-                    )
-                )
+                return future.result()  # Block until complete
         except Exception as e:
             logger.error(f"Error in send_message_sync (chat_ids={len(chat_ids)}): {e}")
             return {cid: False for cid in chat_ids}
@@ -163,10 +161,17 @@ class TelegramBotController:
         emoji: Optional[str] = None,
         footer: Optional[str] = None,
     ) -> Dict[str, bool]:
+        """
+        Synchronously send a formatted message, blocking until completion.
+
+        Works correctly in both sync and async contexts by running
+        in a separate thread to avoid event loop conflicts.
+        """
         try:
-            try:
-                asyncio.get_running_loop()
-                asyncio.create_task(
+            # Always use a thread pool to run asyncio.run() to avoid event loop conflicts
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
                     self.send_formatted(
                         title=title,
                         fields=fields,
@@ -175,17 +180,7 @@ class TelegramBotController:
                         footer=footer,
                     )
                 )
-                return {cid: True for cid in chat_ids}
-            except RuntimeError:
-                return asyncio.run(
-                    self.send_formatted(
-                        title=title,
-                        fields=fields,
-                        chat_ids=chat_ids,
-                        emoji=emoji,
-                        footer=footer,
-                    )
-                )
+                return future.result()  # Block until complete
         except Exception as e:
             logger.error(f"Error in send_formatted_sync (chat_ids={len(chat_ids)}): {e}")
             return {cid: False for cid in chat_ids}
@@ -195,13 +190,20 @@ class TelegramBotController:
         return result.get(chat_id, False)
 
     def test_connection_sync(self, chat_id: str) -> bool:
+        """
+        Synchronously test connection, blocking until completion.
+
+        Works correctly in both sync and async contexts by running
+        in a separate thread to avoid event loop conflicts.
+        """
         try:
-            try:
-                asyncio.get_running_loop()
-                asyncio.create_task(self.test_connection(chat_id))
-                return True
-            except RuntimeError:
-                return asyncio.run(self.test_connection(chat_id))
+            # Always use a thread pool to run asyncio.run() to avoid event loop conflicts
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self.test_connection(chat_id)
+                )
+                return future.result()  # Block until complete
         except Exception as e:
             logger.error(f"Error in test_connection_sync (chat_id={chat_id}): {e}")
             return False
