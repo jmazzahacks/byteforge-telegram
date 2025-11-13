@@ -79,3 +79,10 @@ dmypy.json
 
 # pytype static type analyzer
 .pytype/
+
+# Claude Code configuration
+.claude/
+
+# Test scripts and bug reports (throwaway files)
+test_*.py
+telegram_*.md
