@@ -12,7 +12,7 @@ from byteforge_telegram.notifier import TelegramBotController, ParseMode
 from byteforge_telegram.webhook import WebhookManager
 from byteforge_telegram.models import TelegramResponse
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "TelegramBotController",
