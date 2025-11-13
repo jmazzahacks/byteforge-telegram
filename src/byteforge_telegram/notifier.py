@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 from enum import Enum
 import asyncio
 import concurrent.futures
+import html
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -89,6 +90,10 @@ class TelegramBotController:
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
     ) -> Dict[str, bool]:
+        # Escape HTML entities to prevent parsing errors when using HTML mode
+        if parse_mode == ParseMode.HTML:
+            text = html.escape(text)
+
         return await self._send_with_new_bot(
             text=text,
             chat_ids=chat_ids,
@@ -137,21 +142,35 @@ class TelegramBotController:
         emoji: Optional[str] = None,
         footer: Optional[str] = None,
     ) -> Dict[str, bool]:
+        # Escape HTML entities in user-provided content to prevent parsing errors
+        escaped_title = html.escape(title)
         parts: List[str] = []
         if emoji:
-            parts.append(f"{emoji} <b>{title}</b>")
+            parts.append(f"{emoji} <b>{escaped_title}</b>")
         else:
-            parts.append(f"<b>{title}</b>")
+            parts.append(f"<b>{escaped_title}</b>")
         parts.append("")
         for key, value in fields.items():
             if value is None:
                 value = "N/A"
-            parts.append(f"<b>{key}:</b> {value}")
+            escaped_key = html.escape(str(key))
+            escaped_value = html.escape(str(value))
+            parts.append(f"<b>{escaped_key}:</b> {escaped_value}")
         if footer:
             parts.append("")
-            parts.append(f"<i>{footer}</i>")
+            escaped_footer = html.escape(footer)
+            parts.append(f"<i>{escaped_footer}</i>")
         message = "\n".join(parts)
-        return await self.send_message(message, chat_ids)
+        # Pass parse_mode=HTML and disable auto-escaping since we already escaped
+        # Actually, we need to NOT call send_message because it will double-escape
+        # Instead call _send_with_new_bot directly
+        return await self._send_with_new_bot(
+            text=message,
+            chat_ids=chat_ids,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=False,
+            disable_notification=False,
+        )
 
     def send_formatted_sync(
         self,

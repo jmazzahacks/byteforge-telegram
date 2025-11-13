@@ -57,7 +57,7 @@ class TestTelegramBotController:
 
     @pytest.mark.asyncio
     async def test_send_message_with_parse_mode(self):
-        """Test sending message with different parse modes."""
+        """Test that HTML entities are escaped even when they look like HTML tags."""
         controller = TelegramBotController("test_token")
 
         with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
@@ -65,15 +65,18 @@ class TestTelegramBotController:
             mock_bot_class.return_value = mock_bot
             mock_bot.send_message = AsyncMock()
 
+            # When using HTML parse mode, even text that looks like HTML tags is escaped
+            # This prevents parsing errors for user-provided content
             await controller.send_message(
                 text="<b>Bold</b>",
                 chat_ids=["123"],
                 parse_mode=ParseMode.HTML
             )
 
+            # Verify that the HTML-like text was escaped to prevent parsing errors
             mock_bot.send_message.assert_called_once_with(
                 chat_id="123",
-                text="<b>Bold</b>",
+                text="&lt;b&gt;Bold&lt;/b&gt;",
                 parse_mode="HTML",
                 disable_web_page_preview=False,
                 disable_notification=False
