@@ -10,10 +10,65 @@ from enum import Enum
 import asyncio
 import concurrent.futures
 import html
+import re
 from telegram import Bot
 from telegram.error import TelegramError
 
 logger = logging.getLogger(__name__)
+
+
+def escape_telegram_html(text: str) -> str:
+    """
+    Escape HTML entities while preserving allowed Telegram formatting tags.
+
+    This function escapes literal <, >, and & characters that could cause
+    "Can't parse entities" errors, while preserving intentional HTML formatting
+    tags that Telegram supports.
+
+    Allowed tags (from Telegram Bot API):
+    - b, strong: bold
+    - i, em: italic
+    - u, ins: underline
+    - s, strike, del: strikethrough
+    - code: inline code
+    - pre: preformatted block
+    - a: hyperlink
+    - blockquote, expandable_blockquote: quote
+    - tg-spoiler: spoiler
+    - tg-emoji: custom emoji
+
+    Example:
+        "<b>Score: <70%</b>" → "<b>Score: &lt;70%</b>"
+        (preserves <b> tags but escapes <70)
+
+    Args:
+        text: Raw text that may contain both formatting tags and special characters
+
+    Returns:
+        Text with special characters escaped but allowed HTML tags preserved
+    """
+    # Pattern to match allowed Telegram HTML tags (opening and closing)
+    # Includes optional attributes for tags like <a href="..."> and <tg-emoji emoji-id="...">
+    allowed_tags_pattern = (
+        r'</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|blockquote|'
+        r'expandable_blockquote|tg-spoiler|tg-emoji)(?:\s+[^>]*)?>'
+    )
+
+    # Split text into tag and non-tag segments
+    # The pattern in parentheses creates capture groups that are included in the result
+    parts = re.split(f'({allowed_tags_pattern})', text, flags=re.IGNORECASE)
+
+    # Escape only non-tag parts (even-indexed elements after split)
+    escaped_parts = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Non-tag text - escape special characters
+            escaped_parts.append(html.escape(part))
+        else:
+            # Tag - preserve as-is
+            escaped_parts.append(part)
+
+    return ''.join(escaped_parts)
 
 
 class ParseMode(Enum):
@@ -90,9 +145,9 @@ class TelegramBotController:
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
     ) -> Dict[str, bool]:
-        # Escape HTML entities to prevent parsing errors when using HTML mode
+        # Escape HTML entities while preserving allowed formatting tags
         if parse_mode == ParseMode.HTML:
-            text = html.escape(text)
+            text = escape_telegram_html(text)
 
         return await self._send_with_new_bot(
             text=text,
@@ -142,7 +197,8 @@ class TelegramBotController:
         emoji: Optional[str] = None,
         footer: Optional[str] = None,
     ) -> Dict[str, bool]:
-        # Escape HTML entities in user-provided content to prevent parsing errors
+        # Escape user-provided content to prevent parsing errors
+        # Use simple html.escape() since we're constructing the HTML ourselves
         escaped_title = html.escape(title)
         parts: List[str] = []
         if emoji:
@@ -161,9 +217,8 @@ class TelegramBotController:
             escaped_footer = html.escape(footer)
             parts.append(f"<i>{escaped_footer}</i>")
         message = "\n".join(parts)
-        # Pass parse_mode=HTML and disable auto-escaping since we already escaped
-        # Actually, we need to NOT call send_message because it will double-escape
-        # Instead call _send_with_new_bot directly
+        # Call _send_with_new_bot directly to avoid double-escaping
+        # (user content is already escaped, and we've added our own formatting tags)
         return await self._send_with_new_bot(
             text=message,
             chat_ids=chat_ids,
