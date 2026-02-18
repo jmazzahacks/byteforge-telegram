@@ -5,6 +5,7 @@ A reusable Telegram bot notification system that can be used across different pr
 """
 
 import logging
+import time
 from typing import Optional, List, Dict, Any
 from enum import Enum
 import asyncio
@@ -15,6 +16,9 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 logger = logging.getLogger(__name__)
+
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+DEFAULT_RATE_LIMIT_SECONDS = 1.1
 
 
 def escape_telegram_html(text: str) -> str:
@@ -71,6 +75,46 @@ def escape_telegram_html(text: str) -> str:
     return ''.join(escaped_parts)
 
 
+def split_message(text: str, max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> List[str]:
+    """
+    Split a long message into chunks that fit within Telegram's character limit.
+
+    Tries to split at natural boundaries in order of preference:
+    paragraph break, newline, space, then hard cut.
+
+    Args:
+        text: The message text to split
+        max_length: Maximum characters per chunk (default: 4096)
+
+    Returns:
+        List of message chunks, each within max_length
+    """
+    if len(text) <= max_length:
+        return [text]
+
+    chunks: List[str] = []
+    remaining = text
+
+    while remaining:
+        if len(remaining) <= max_length:
+            chunks.append(remaining)
+            break
+
+        # Try paragraph boundary first, then newline, then space
+        split_pos = remaining.rfind("\n\n", 0, max_length)
+        if split_pos == -1:
+            split_pos = remaining.rfind("\n", 0, max_length)
+        if split_pos == -1:
+            split_pos = remaining.rfind(" ", 0, max_length)
+        if split_pos == -1:
+            split_pos = max_length
+
+        chunks.append(remaining[:split_pos])
+        remaining = remaining[split_pos:].lstrip()
+
+    return chunks
+
+
 class ParseMode(Enum):
     HTML = "HTML"
     MARKDOWN = "Markdown"
@@ -83,11 +127,28 @@ class TelegramBotController:
     Generic Telegram bot controller using per-call Bot instances to avoid cross-loop issues.
     """
 
-    def __init__(self, bot_token: str):
+    def __init__(self, bot_token: str, rate_limit_seconds: float = DEFAULT_RATE_LIMIT_SECONDS):
         if not bot_token:
             raise ValueError("bot_token is required")
         self.bot_token = bot_token
+        self.rate_limit_seconds = rate_limit_seconds
+        self._last_send_per_chat: Dict[str, float] = {}
         logger.debug("Telegram bot controller initialized")
+
+    async def _wait_for_rate_limit(self, chat_id: str) -> None:
+        """Wait if needed to respect per-chat rate limiting."""
+        if self.rate_limit_seconds <= 0:
+            return
+        last_send = self._last_send_per_chat.get(chat_id, 0.0)
+        elapsed = time.monotonic() - last_send
+        wait_time = self.rate_limit_seconds - elapsed
+        if wait_time > 0:
+            logger.debug(f"Rate limiting chat {chat_id}: waiting {wait_time:.2f}s")
+            await asyncio.sleep(wait_time)
+
+    def _record_send(self, chat_id: str) -> None:
+        """Record the timestamp of a successful send for rate limiting."""
+        self._last_send_per_chat[chat_id] = time.monotonic()
 
     async def _send_with_new_bot(
         self,
@@ -101,20 +162,24 @@ class TelegramBotController:
             logger.warning("No chat_ids provided")
             return {}
 
+        chunks = split_message(text)
         bot = Bot(token=self.bot_token)
         results: Dict[str, bool] = {}
         try:
             for chat_id in chat_ids:
                 try:
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=text,
-                        parse_mode=parse_mode.value if parse_mode else None,
-                        disable_web_page_preview=disable_web_page_preview,
-                        disable_notification=disable_notification,
-                    )
+                    for chunk in chunks:
+                        await self._wait_for_rate_limit(chat_id)
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk,
+                            parse_mode=parse_mode.value if parse_mode else None,
+                            disable_web_page_preview=disable_web_page_preview,
+                            disable_notification=disable_notification,
+                        )
+                        self._record_send(chat_id)
                     results[chat_id] = True
-                    logger.debug(f"Message sent successfully to {chat_id}")
+                    logger.debug(f"Message sent successfully to {chat_id} ({len(chunks)} chunk(s))")
                 except TelegramError as e:
                     results[chat_id] = False
                     logger.error(f"Telegram error for chat {chat_id}: {e}")
