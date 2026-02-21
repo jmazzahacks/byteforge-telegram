@@ -8,11 +8,11 @@ This library provides reusable components for:
 - Both sync and async support
 """
 
-from byteforge_telegram.notifier import TelegramBotController, ParseMode, split_message
+from byteforge_telegram.notifier import TelegramBotController, ParseMode, split_message, repair_html_tags
 from byteforge_telegram.webhook import WebhookManager
 from byteforge_telegram.models import TelegramResponse
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 __all__ = [
     "TelegramBotController",
@@ -20,4 +20,5 @@ __all__ = [
     "WebhookManager",
     "TelegramResponse",
     "split_message",
+    "repair_html_tags",
 ]

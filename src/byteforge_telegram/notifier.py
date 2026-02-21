@@ -12,6 +12,7 @@ import asyncio
 import concurrent.futures
 import html
 import re
+from bs4 import BeautifulSoup
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -73,6 +74,42 @@ def escape_telegram_html(text: str) -> str:
             escaped_parts.append(part)
 
     return ''.join(escaped_parts)
+
+
+TELEGRAM_ALLOWED_TAGS = {
+    "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+    "code", "pre", "a", "blockquote", "tg-spoiler", "tg-emoji",
+}
+
+
+def repair_html_tags(text: str) -> str:
+    """
+    Repair unbalanced HTML tags to prevent Telegram "Can't parse entities" errors.
+
+    Uses BeautifulSoup's html.parser to auto-close unclosed tags and remove
+    orphaned closing tags. Only keeps tags that Telegram's HTML mode supports.
+
+    Should be called after escape_telegram_html() and before sending to Telegram.
+
+    Args:
+        text: HTML text that may contain unbalanced tags
+
+    Returns:
+        Text with balanced HTML tags
+    """
+    soup = BeautifulSoup(text, "html.parser")
+
+    # Remove any tags that aren't in Telegram's allowed set
+    for tag in soup.find_all(True):
+        if tag.name not in TELEGRAM_ALLOWED_TAGS:
+            tag.unwrap()
+
+    repaired = soup.decode_contents()
+
+    if repaired != text:
+        logger.debug("Repaired unbalanced HTML tags in message")
+
+    return repaired
 
 
 def split_message(text: str, max_length: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> List[str]:
@@ -150,6 +187,28 @@ class TelegramBotController:
         """Record the timestamp of a successful send for rate limiting."""
         self._last_send_per_chat[chat_id] = time.monotonic()
 
+    async def _send_chunks_plain_text(
+        self,
+        bot: Bot,
+        chunks: List[str],
+        chat_id: str,
+        disable_web_page_preview: bool,
+        disable_notification: bool,
+    ) -> bool:
+        """Strip HTML tags from chunks and send as plain text. Used as fallback on parse errors."""
+        for chunk in chunks:
+            stripped = re.sub(r'<[^>]+>', '', chunk)
+            await self._wait_for_rate_limit(chat_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=stripped,
+                parse_mode=None,
+                disable_web_page_preview=disable_web_page_preview,
+                disable_notification=disable_notification,
+            )
+            self._record_send(chat_id)
+        return True
+
     async def _send_with_new_bot(
         self,
         text: str,
@@ -181,8 +240,22 @@ class TelegramBotController:
                     results[chat_id] = True
                     logger.debug(f"Message sent successfully to {chat_id} ({len(chunks)} chunk(s))")
                 except TelegramError as e:
-                    results[chat_id] = False
-                    logger.error(f"Telegram error for chat {chat_id}: {e}")
+                    if "Can't parse entities" in str(e) and parse_mode:
+                        logger.warning(
+                            f"HTML parse error for chat {chat_id}, retrying as plain text: {e}"
+                        )
+                        try:
+                            results[chat_id] = await self._send_chunks_plain_text(
+                                bot, chunks, chat_id,
+                                disable_web_page_preview, disable_notification,
+                            )
+                            logger.debug(f"Plain text fallback succeeded for {chat_id}")
+                        except Exception as retry_err:
+                            results[chat_id] = False
+                            logger.error(f"Plain text fallback failed for {chat_id}: {retry_err}")
+                    else:
+                        results[chat_id] = False
+                        logger.error(f"Telegram error for chat {chat_id}: {e}")
                 except Exception as e:
                     results[chat_id] = False
                     logger.error(f"Unexpected error sending to {chat_id}: {e}")
@@ -210,9 +283,11 @@ class TelegramBotController:
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
     ) -> Dict[str, bool]:
-        # Escape HTML entities while preserving allowed formatting tags
+        # Escape HTML entities while preserving allowed formatting tags,
+        # then repair any unbalanced tags to prevent parse errors
         if parse_mode == ParseMode.HTML:
             text = escape_telegram_html(text)
+            text = repair_html_tags(text)
 
         return await self._send_with_new_bot(
             text=text,

@@ -6,7 +6,8 @@ to prevent Telegram HTML parsing errors.
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from byteforge_telegram.notifier import TelegramBotController, ParseMode
+from telegram.error import TelegramError
+from byteforge_telegram.notifier import TelegramBotController, ParseMode, repair_html_tags
 
 
 @pytest.mark.asyncio
@@ -343,3 +344,186 @@ Found 1 config scoring ≥ 70
         # Content should be preserved
         assert "🎯 High-Scoring Config Found!" in result
         assert "TRX/WETH" in result
+
+
+# --- repair_html_tags tests ---
+
+
+class TestRepairHtmlTags:
+    """Tests for repair_html_tags() tag balancing."""
+
+    def test_already_balanced_unchanged(self):
+        """Balanced tags should pass through unchanged."""
+        text = "<b>hello</b> <i>world</i>"
+        assert repair_html_tags(text) == text
+
+    def test_orphaned_closing_tag_removed(self):
+        """Orphaned closing tags should be removed."""
+        result = repair_html_tags("Hello </b>world")
+        assert "</b>" not in result
+        assert "Hello" in result
+        assert "world" in result
+
+    def test_unclosed_tag_auto_closed(self):
+        """Unclosed tags should be auto-closed at end."""
+        result = repair_html_tags("<b>Hello")
+        assert result == "<b>Hello</b>"
+
+    def test_multiple_unclosed_tags(self):
+        """Multiple unclosed tags should all be auto-closed in reverse order."""
+        result = repair_html_tags("<b><i>text")
+        assert result == "<b><i>text</i></b>"
+
+    def test_nested_mismatch_repaired(self):
+        """Misnested tags should be repaired to proper nesting."""
+        result = repair_html_tags("<b><i>text</b></i>")
+        # bs4 should produce properly nested output
+        assert "<b>" in result
+        assert "<i>" in result
+        assert "text" in result
+        # Verify it's parseable (no orphaned tags)
+        repaired_again = repair_html_tags(result)
+        assert repaired_again == result
+
+    def test_plain_text_unchanged(self):
+        """Plain text with no tags should pass through unchanged."""
+        text = "Just plain text with no tags"
+        assert repair_html_tags(text) == text
+
+    def test_escaped_entities_preserved(self):
+        """Already-escaped HTML entities should not be double-escaped."""
+        text = "<b>Score: &lt;70%</b>"
+        result = repair_html_tags(text)
+        assert "&lt;70%" in result
+        assert "<b>" in result
+        assert "</b>" in result
+
+    def test_multiple_orphaned_closing_tags(self):
+        """Multiple orphaned closing tags should all be removed."""
+        result = repair_html_tags("Hello </b></i></u> world")
+        assert "</b>" not in result
+        assert "</i>" not in result
+        assert "</u>" not in result
+        assert "Hello" in result
+        assert "world" in result
+
+    def test_mixed_valid_and_invalid_tags(self):
+        """Valid balanced tags preserved, orphaned ones removed."""
+        result = repair_html_tags("<b>bold</b> </i>orphan <i>italic</i>")
+        assert "<b>bold</b>" in result
+        assert "<i>italic</i>" in result
+        # Orphaned </i> should be gone
+        assert result.count("</i>") == 1
+
+    def test_link_tag_preserved(self):
+        """Anchor tags with href should be preserved and balanced."""
+        text = '<a href="https://example.com">link</a>'
+        assert repair_html_tags(text) == text
+
+    def test_unclosed_link_tag_closed(self):
+        """Unclosed anchor tag should be auto-closed."""
+        result = repair_html_tags('<a href="https://example.com">link')
+        assert "</a>" in result
+
+    def test_empty_string(self):
+        """Empty string should return empty string."""
+        assert repair_html_tags("") == ""
+
+    def test_real_world_llm_output(self):
+        """Simulate a real LLM-generated message with unbalanced tags."""
+        text = (
+            "<b>Config Analysis</b>\n\n"
+            "Found <b>3 configs scoring above threshold\n"  # unclosed <b>
+            "<i>Processing complete</i>\n"
+            "Extra closing tag follows:</b>"  # orphaned </b>
+        )
+        result = repair_html_tags(text)
+        # Should be parseable — repair again and ensure stable
+        repaired_again = repair_html_tags(result)
+        assert repaired_again == result
+
+
+# --- Plain text fallback tests ---
+
+
+class TestPlainTextFallback:
+    """Tests for plain text fallback when HTML parsing fails."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_on_parse_error(self):
+        """When Telegram rejects HTML, message should be retried as plain text."""
+        controller = TelegramBotController("test_token")
+
+        with patch("byteforge_telegram.notifier.Bot") as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+
+            # First call fails with parse error, subsequent calls succeed
+            mock_bot.send_message = AsyncMock(
+                side_effect=[
+                    TelegramError("Can't parse entities: unexpected end tag at byte offset 585"),
+                    None,  # plain text retry succeeds
+                ]
+            )
+
+            result = await controller.send_message(
+                text="<b>Hello</b> world",
+                chat_ids=["123"],
+                parse_mode=ParseMode.HTML,
+            )
+
+            assert result == {"123": True}
+            assert mock_bot.send_message.call_count == 2
+            # Second call should have parse_mode=None (plain text)
+            retry_call = mock_bot.send_message.call_args_list[1]
+            assert retry_call.kwargs["parse_mode"] is None
+            # Tags should be stripped in the plain text version
+            assert "<b>" not in retry_call.kwargs["text"]
+            assert "Hello" in retry_call.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_also_fails(self):
+        """When both HTML and plain text fail, result should be False."""
+        controller = TelegramBotController("test_token")
+
+        with patch("byteforge_telegram.notifier.Bot") as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+
+            mock_bot.send_message = AsyncMock(
+                side_effect=[
+                    TelegramError("Can't parse entities: unexpected end tag"),
+                    TelegramError("Chat not found"),
+                ]
+            )
+
+            result = await controller.send_message(
+                text="<b>Hello</b>",
+                chat_ids=["123"],
+                parse_mode=ParseMode.HTML,
+            )
+
+            assert result == {"123": False}
+
+    @pytest.mark.asyncio
+    async def test_non_parse_error_no_fallback(self):
+        """Non-parse TelegramErrors should not trigger fallback retry."""
+        controller = TelegramBotController("test_token")
+
+        with patch("byteforge_telegram.notifier.Bot") as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+
+            mock_bot.send_message = AsyncMock(
+                side_effect=TelegramError("Forbidden: bot was blocked by the user")
+            )
+
+            result = await controller.send_message(
+                text="<b>Hello</b>",
+                chat_ids=["123"],
+                parse_mode=ParseMode.HTML,
+            )
+
+            assert result == {"123": False}
+            # Should only be called once — no retry
+            assert mock_bot.send_message.call_count == 1
