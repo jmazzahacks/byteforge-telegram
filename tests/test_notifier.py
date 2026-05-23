@@ -73,14 +73,12 @@ class TestTelegramBotController:
                 parse_mode=ParseMode.HTML
             )
 
-            # Verify that HTML formatting tags are preserved (not escaped)
-            mock_bot.send_message.assert_called_once_with(
-                chat_id="123",
-                text="<b>Bold</b>",
-                parse_mode="HTML",
-                disable_web_page_preview=False,
-                disable_notification=False
-            )
+            # Test focus: HTML formatting tags are preserved (not escaped) and parse_mode is set.
+            # Avoid asserting other kwargs here so adding new ones doesn't churn this test.
+            mock_bot.send_message.assert_called_once()
+            kwargs = mock_bot.send_message.call_args.kwargs
+            assert kwargs["text"] == "<b>Bold</b>"
+            assert kwargs["parse_mode"] == "HTML"
 
     @pytest.mark.asyncio
     async def test_send_message_with_options(self):
@@ -99,13 +97,11 @@ class TestTelegramBotController:
                 disable_notification=True
             )
 
-            mock_bot.send_message.assert_called_once_with(
-                chat_id="123",
-                text="Test",
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                disable_notification=True
-            )
+            # Test focus: the disable_* flags propagate.
+            mock_bot.send_message.assert_called_once()
+            kwargs = mock_bot.send_message.call_args.kwargs
+            assert kwargs["disable_web_page_preview"] is True
+            assert kwargs["disable_notification"] is True
 
     @pytest.mark.asyncio
     async def test_send_message_empty_chat_ids(self):
@@ -308,6 +304,87 @@ class TestTelegramBotController:
 
             assert isinstance(result, dict)
             assert "123" in result
+
+    @pytest.mark.asyncio
+    async def test_send_to_chat_forwards_thread_id(self):
+        """send_to_chat passes message_thread_id through to Bot.send_message."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.send_message = AsyncMock()
+
+            result = await controller.send_to_chat(
+                chat_id="-1001234567890",
+                text="hello topic",
+                message_thread_id=42,
+            )
+
+            assert result is True
+            mock_bot.send_message.assert_called_once()
+            kwargs = mock_bot.send_message.call_args.kwargs
+            assert kwargs["chat_id"] == "-1001234567890"
+            assert kwargs["text"] == "hello topic"
+            assert kwargs["message_thread_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_send_to_chat_without_thread_id(self):
+        """send_to_chat defaults message_thread_id to None (regular chat send)."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.send_message = AsyncMock()
+
+            result = await controller.send_to_chat(
+                chat_id="123",
+                text="plain",
+            )
+
+            assert result is True
+            kwargs = mock_bot.send_message.call_args.kwargs
+            assert kwargs["message_thread_id"] is None
+            assert kwargs["chat_id"] == "123"
+
+    @pytest.mark.asyncio
+    async def test_send_to_chat_failure_returns_false(self):
+        """send_to_chat returns False when the underlying send fails."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.send_message = AsyncMock(side_effect=TelegramError("nope"))
+
+            result = await controller.send_to_chat(
+                chat_id="123",
+                text="hi",
+                message_thread_id=7,
+            )
+
+            assert result is False
+
+    def test_send_to_chat_sync(self):
+        """Sync wrapper returns a bool and forwards thread id."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.send_message = AsyncMock()
+
+            result = controller.send_to_chat_sync(
+                chat_id="-1001234567890",
+                text="hi",
+                message_thread_id=99,
+            )
+
+            assert isinstance(result, bool)
+            assert result is True
+            kwargs = mock_bot.send_message.call_args.kwargs
+            assert kwargs["message_thread_id"] == 99
 
     def test_test_connection_sync(self):
         """Test synchronous test_connection method."""

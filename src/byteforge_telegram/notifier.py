@@ -6,7 +6,8 @@ A reusable Telegram bot notification system that can be used across different pr
 
 import logging
 import time
-from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Any, Coroutine, TypeVar
 from enum import Enum
 import asyncio
 import concurrent.futures
@@ -15,6 +16,8 @@ import re
 from bs4 import BeautifulSoup
 from telegram import Bot
 from telegram.error import TelegramError
+
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +162,15 @@ class ParseMode(Enum):
     NONE = None
 
 
+@dataclass
+class _SendOptions:
+    """Internal bundle of optional Bot.send_message parameters used by the send pipeline."""
+    parse_mode: Optional[ParseMode] = None
+    disable_web_page_preview: bool = False
+    disable_notification: bool = False
+    message_thread_id: Optional[int] = None
+
+
 class TelegramBotController:
     """
     Generic Telegram bot controller using per-call Bot instances to avoid cross-loop issues.
@@ -187,13 +199,36 @@ class TelegramBotController:
         """Record the timestamp of a successful send for rate limiting."""
         self._last_send_per_chat[chat_id] = time.monotonic()
 
+    def _preprocess_text(self, text: str, parse_mode: Optional[ParseMode]) -> str:
+        """Escape HTML entities and repair unbalanced tags when sending in HTML mode."""
+        if parse_mode == ParseMode.HTML:
+            text = escape_telegram_html(text)
+            text = repair_html_tags(text)
+        return text
+
+    def _run_async_sync(
+        self,
+        coro: "Coroutine[Any, Any, T]",
+        on_error: T,
+        error_label: str,
+    ) -> T:
+        """Run a coroutine to completion from sync code, surviving caller event loops."""
+        # Run in a fresh thread so asyncio.run() can install its own event loop
+        # regardless of whether the caller is already inside a running loop.
+        try:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future: "concurrent.futures.Future[T]" = executor.submit(asyncio.run, coro)
+                return future.result()
+        except Exception as e:
+            logger.error(f"Error in {error_label}: {e}")
+            return on_error
+
     async def _send_chunks_plain_text(
         self,
         bot: Bot,
         chunks: List[str],
         chat_id: str,
-        disable_web_page_preview: bool,
-        disable_notification: bool,
+        options: _SendOptions,
     ) -> bool:
         """Strip HTML tags from chunks and send as plain text. Used as fallback on parse errors."""
         for chunk in chunks:
@@ -203,8 +238,9 @@ class TelegramBotController:
                 chat_id=chat_id,
                 text=stripped,
                 parse_mode=None,
-                disable_web_page_preview=disable_web_page_preview,
-                disable_notification=disable_notification,
+                disable_web_page_preview=options.disable_web_page_preview,
+                disable_notification=options.disable_notification,
+                message_thread_id=options.message_thread_id,
             )
             self._record_send(chat_id)
         return True
@@ -213,9 +249,7 @@ class TelegramBotController:
         self,
         text: str,
         chat_ids: List[str],
-        parse_mode: Optional[ParseMode],
-        disable_web_page_preview: bool,
-        disable_notification: bool,
+        options: _SendOptions,
     ) -> Dict[str, bool]:
         if not chat_ids:
             logger.warning("No chat_ids provided")
@@ -232,22 +266,22 @@ class TelegramBotController:
                         await bot.send_message(
                             chat_id=chat_id,
                             text=chunk,
-                            parse_mode=parse_mode.value if parse_mode else None,
-                            disable_web_page_preview=disable_web_page_preview,
-                            disable_notification=disable_notification,
+                            parse_mode=options.parse_mode.value if options.parse_mode else None,
+                            disable_web_page_preview=options.disable_web_page_preview,
+                            disable_notification=options.disable_notification,
+                            message_thread_id=options.message_thread_id,
                         )
                         self._record_send(chat_id)
                     results[chat_id] = True
                     logger.debug(f"Message sent successfully to {chat_id} ({len(chunks)} chunk(s))")
                 except TelegramError as e:
-                    if "Can't parse entities" in str(e) and parse_mode:
+                    if "Can't parse entities" in str(e) and options.parse_mode:
                         logger.warning(
                             f"HTML parse error for chat {chat_id}, retrying as plain text: {e}"
                         )
                         try:
                             results[chat_id] = await self._send_chunks_plain_text(
-                                bot, chunks, chat_id,
-                                disable_web_page_preview, disable_notification,
+                                bot, chunks, chat_id, options,
                             )
                             logger.debug(f"Plain text fallback succeeded for {chat_id}")
                         except Exception as retry_err:
@@ -279,66 +313,106 @@ class TelegramBotController:
         self,
         text: str,
         chat_ids: List[str],
+        *,
         parse_mode: ParseMode = ParseMode.HTML,
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
     ) -> Dict[str, bool]:
-        # Escape HTML entities while preserving allowed formatting tags,
-        # then repair any unbalanced tags to prevent parse errors
-        if parse_mode == ParseMode.HTML:
-            text = escape_telegram_html(text)
-            text = repair_html_tags(text)
-
         return await self._send_with_new_bot(
-            text=text,
+            text=self._preprocess_text(text, parse_mode),
             chat_ids=chat_ids,
-            parse_mode=parse_mode,
-            disable_web_page_preview=disable_web_page_preview,
-            disable_notification=disable_notification,
+            options=_SendOptions(
+                parse_mode=parse_mode,
+                disable_web_page_preview=disable_web_page_preview,
+                disable_notification=disable_notification,
+            ),
         )
 
     def send_message_sync(
         self,
         text: str,
         chat_ids: List[str],
+        *,
         parse_mode: ParseMode = ParseMode.HTML,
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
     ) -> Dict[str, bool]:
-        """
-        Synchronously send a message, blocking until completion.
+        """Synchronously send a message, blocking until completion."""
+        return self._run_async_sync(
+            self.send_message(
+                text=text,
+                chat_ids=chat_ids,
+                parse_mode=parse_mode,
+                disable_web_page_preview=disable_web_page_preview,
+                disable_notification=disable_notification,
+            ),
+            on_error={cid: False for cid in chat_ids},
+            error_label=f"send_message_sync (chat_ids={len(chat_ids)})",
+        )
 
-        Works correctly in both sync and async contexts by running
-        in a separate thread to avoid event loop conflicts.
+    async def send_to_chat(
+        self,
+        chat_id: str,
+        text: str,
+        *,
+        message_thread_id: Optional[int] = None,
+        parse_mode: ParseMode = ParseMode.HTML,
+        disable_web_page_preview: bool = False,
+        disable_notification: bool = False,
+    ) -> bool:
         """
-        try:
-            # Always use a thread pool to run asyncio.run() to avoid event loop conflicts
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    self.send_message(
-                        text=text,
-                        chat_ids=chat_ids,
-                        parse_mode=parse_mode,
-                        disable_web_page_preview=disable_web_page_preview,
-                        disable_notification=disable_notification,
-                    )
-                )
-                return future.result()  # Block until complete
-        except Exception as e:
-            logger.error(f"Error in send_message_sync (chat_ids={len(chat_ids)}): {e}")
-            return {cid: False for cid in chat_ids}
+        Send to a single chat, optionally targeting a supergroup topic.
+
+        A thread id only applies to one supergroup, so this method takes a single
+        chat_id rather than a list. Use send_message for fan-out without topics.
+        """
+        results = await self._send_with_new_bot(
+            text=self._preprocess_text(text, parse_mode),
+            chat_ids=[chat_id],
+            options=_SendOptions(
+                parse_mode=parse_mode,
+                disable_web_page_preview=disable_web_page_preview,
+                disable_notification=disable_notification,
+                message_thread_id=message_thread_id,
+            ),
+        )
+        return results.get(chat_id, False)
+
+    def send_to_chat_sync(
+        self,
+        chat_id: str,
+        text: str,
+        *,
+        message_thread_id: Optional[int] = None,
+        parse_mode: ParseMode = ParseMode.HTML,
+        disable_web_page_preview: bool = False,
+        disable_notification: bool = False,
+    ) -> bool:
+        """Synchronously send to a single chat (optionally a topic), blocking until completion."""
+        return self._run_async_sync(
+            self.send_to_chat(
+                chat_id=chat_id,
+                text=text,
+                message_thread_id=message_thread_id,
+                parse_mode=parse_mode,
+                disable_web_page_preview=disable_web_page_preview,
+                disable_notification=disable_notification,
+            ),
+            on_error=False,
+            error_label=f"send_to_chat_sync (chat_id={chat_id})",
+        )
 
     async def send_formatted(
         self,
         title: str,
         fields: Dict[str, Any],
         chat_ids: List[str],
+        *,
         emoji: Optional[str] = None,
         footer: Optional[str] = None,
     ) -> Dict[str, bool]:
-        # Escape user-provided content to prevent parsing errors
-        # Use simple html.escape() since we're constructing the HTML ourselves
+        # We're constructing the HTML ourselves with per-field escaping, so bypass
+        # _preprocess_text to avoid double-escaping our own formatting tags.
         escaped_title = html.escape(title)
         parts: List[str] = []
         if emoji:
@@ -357,14 +431,10 @@ class TelegramBotController:
             escaped_footer = html.escape(footer)
             parts.append(f"<i>{escaped_footer}</i>")
         message = "\n".join(parts)
-        # Call _send_with_new_bot directly to avoid double-escaping
-        # (user content is already escaped, and we've added our own formatting tags)
         return await self._send_with_new_bot(
             text=message,
             chat_ids=chat_ids,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=False,
-            disable_notification=False,
+            options=_SendOptions(parse_mode=ParseMode.HTML),
         )
 
     def send_formatted_sync(
@@ -372,52 +442,31 @@ class TelegramBotController:
         title: str,
         fields: Dict[str, Any],
         chat_ids: List[str],
+        *,
         emoji: Optional[str] = None,
         footer: Optional[str] = None,
     ) -> Dict[str, bool]:
-        """
-        Synchronously send a formatted message, blocking until completion.
-
-        Works correctly in both sync and async contexts by running
-        in a separate thread to avoid event loop conflicts.
-        """
-        try:
-            # Always use a thread pool to run asyncio.run() to avoid event loop conflicts
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    self.send_formatted(
-                        title=title,
-                        fields=fields,
-                        chat_ids=chat_ids,
-                        emoji=emoji,
-                        footer=footer,
-                    )
-                )
-                return future.result()  # Block until complete
-        except Exception as e:
-            logger.error(f"Error in send_formatted_sync (chat_ids={len(chat_ids)}): {e}")
-            return {cid: False for cid in chat_ids}
+        """Synchronously send a formatted message, blocking until completion."""
+        return self._run_async_sync(
+            self.send_formatted(
+                title=title,
+                fields=fields,
+                chat_ids=chat_ids,
+                emoji=emoji,
+                footer=footer,
+            ),
+            on_error={cid: False for cid in chat_ids},
+            error_label=f"send_formatted_sync (chat_ids={len(chat_ids)})",
+        )
 
     async def test_connection(self, chat_id: str) -> bool:
         result = await self.send_message("🔔 Telegram notification test successful!", [chat_id])
         return result.get(chat_id, False)
 
     def test_connection_sync(self, chat_id: str) -> bool:
-        """
-        Synchronously test connection, blocking until completion.
-
-        Works correctly in both sync and async contexts by running
-        in a separate thread to avoid event loop conflicts.
-        """
-        try:
-            # Always use a thread pool to run asyncio.run() to avoid event loop conflicts
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    asyncio.run,
-                    self.test_connection(chat_id)
-                )
-                return future.result()  # Block until complete
-        except Exception as e:
-            logger.error(f"Error in test_connection_sync (chat_id={chat_id}): {e}")
-            return False
+        """Synchronously test connection, blocking until completion."""
+        return self._run_async_sync(
+            self.test_connection(chat_id),
+            on_error=False,
+            error_label=f"test_connection_sync (chat_id={chat_id})",
+        )

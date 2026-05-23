@@ -61,6 +61,21 @@ bot.send_formatted_sync(
 )
 ```
 
+### Sending to a Supergroup Topic
+
+Telegram supergroups with topics enabled require a `message_thread_id` to post into
+a specific topic. Use `send_to_chat` (single-target) rather than `send_message`
+(fan-out) — a thread id only applies to one supergroup, so it can't compose with a
+mixed list of chat ids:
+
+```python
+bot.send_to_chat_sync(
+    chat_id="-1001234567890",   # the supergroup
+    text="<b>New ticket filed</b>",
+    message_thread_id=42,        # the topic within it
+)
+```
+
 ### Managing Webhooks
 
 #### Programmatic API
@@ -117,11 +132,17 @@ setup-telegram-webhook --token YOUR_BOT_TOKEN --delete
 - Send a plain text message (synchronous)
 - Returns: `Dict[str, bool]` - success status for each chat
 
+**`send_to_chat_sync(chat_id, text, *, message_thread_id=None, ...)`**
+- Send a message to a single chat, optionally targeting a supergroup topic
+- Returns: `bool` - success status
+- Use this instead of `send_message_sync` when you need `message_thread_id`,
+  since a thread id is only meaningful for one specific supergroup.
+
 **`send_formatted_sync(title, fields, chat_ids, emoji=None, footer=None)`**
 - Send a formatted message with title, fields, and footer (synchronous)
 - Returns: `Dict[str, bool]` - success status for each chat
 
-**`send_message(...)` / `send_formatted(...)`**
+**`send_message(...)` / `send_to_chat(...)` / `send_formatted(...)`**
 - Async versions of the above methods
 - Use with `await` in async contexts
 
