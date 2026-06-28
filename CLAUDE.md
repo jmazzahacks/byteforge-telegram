@@ -241,6 +241,6 @@ src/byteforge_telegram/
 
 ## Version Management
 
-- Version is defined in `pyproject.toml` (currently 0.3.0)
+- Version is defined in `pyproject.toml` (currently 0.3.1)
 - Version must also be updated in `src/byteforge_telegram/__init__.py`
 - When bumping version, update both files to keep them in sync

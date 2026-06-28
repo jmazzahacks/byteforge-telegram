@@ -7,6 +7,7 @@ A generic, reusable Python library for Telegram bot notifications and webhook ma
 - **TelegramBotController**: Send notifications via Telegram Bot API
   - Plain text messages
   - Formatted messages with title, fields, and footer
+  - Rich Messages (Bot API 10.1): tables, lists, headings, formulas, media — see [docs/rich-messages.md](docs/rich-messages.md)
   - Both sync and async support
   - Automatic event loop handling
   - Session cleanup to prevent leaks
@@ -76,6 +77,31 @@ bot.send_to_chat_sync(
 )
 ```
 
+### Sending a Rich Message
+
+Rich Messages (Bot API 10.1) support structured content — headings, lists, tables,
+formulas, media, collapsible blocks — expressed as an extended-HTML or Markdown string.
+Use an `InputRichMessage` with `send_rich_message` / `send_rich_message_sync`:
+
+```python
+from byteforge_telegram import InputRichMessage
+
+bot.send_rich_message_sync(
+    chat_id="123456789",
+    rich_message=InputRichMessage(html=(
+        "<h2>Daily report</h2>"
+        "<ul><li>All systems green</li><li>3 deploys</li></ul>"
+        "<table><tr><th>Metric</th><th>Value</th></tr>"
+        "<tr><td>Uptime</td><td>99.98%</td></tr></table>"
+    )),
+)
+```
+
+Pass exactly one of `html` or `markdown`. Unlike `send_message`, rich text is sent
+**as-is** (no escaping/repair/splitting), so escape literal `<`, `>`, `&` yourself. See
+**[docs/rich-messages.md](docs/rich-messages.md)** for the full list of supported tags,
+attributes, entities, and limits.
+
 ### Managing Webhooks
 
 #### Programmatic API
@@ -142,7 +168,12 @@ setup-telegram-webhook --token YOUR_BOT_TOKEN --delete
 - Send a formatted message with title, fields, and footer (synchronous)
 - Returns: `Dict[str, bool]` - success status for each chat
 
-**`send_message(...)` / `send_to_chat(...)` / `send_formatted(...)`**
+**`send_rich_message_sync(chat_id, rich_message, *, message_thread_id=None, disable_notification=False, protect_content=False)`**
+- Send a Rich Message (Bot API 10.1) to a single chat; `rich_message` is an `InputRichMessage`
+- Returns: `bool` - success status
+- Content is sent as-is (no escaping/repair/splitting). See [docs/rich-messages.md](docs/rich-messages.md)
+
+**`send_message(...)` / `send_to_chat(...)` / `send_formatted(...)` / `send_rich_message(...)`**
 - Async versions of the above methods
 - Use with `await` in async contexts
 

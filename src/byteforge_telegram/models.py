@@ -58,6 +58,9 @@ class InputRichMessage:
     etc. -- is expressed as a single extended HTML or Markdown string (Telegram's
     "Rich Message Formatting Options"), not as a tree of block objects. Exactly one
     of `html` or `markdown` must be provided.
+
+    For the full list of supported tags, attributes, entities, and limits, see
+    docs/rich-messages.md.
     """
 
     html: Optional[str] = None
