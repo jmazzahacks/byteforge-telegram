@@ -88,3 +88,5 @@ test_*.py
 telegram_*.md
 # ...but real test files under tests/ must be tracked
 !tests/test_*.py
+
+.mcp.json
