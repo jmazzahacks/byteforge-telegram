@@ -10,15 +10,16 @@ This library provides reusable components for:
 
 from byteforge_telegram.notifier import TelegramBotController, ParseMode, split_message, repair_html_tags
 from byteforge_telegram.webhook import WebhookManager
-from byteforge_telegram.models import TelegramResponse
+from byteforge_telegram.models import TelegramResponse, InputRichMessage
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "TelegramBotController",
     "ParseMode",
     "WebhookManager",
     "TelegramResponse",
+    "InputRichMessage",
     "split_message",
     "repair_html_tags",
 ]

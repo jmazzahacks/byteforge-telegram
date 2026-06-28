@@ -17,6 +17,8 @@ from bs4 import BeautifulSoup
 from telegram import Bot
 from telegram.error import TelegramError
 
+from byteforge_telegram.models import InputRichMessage
+
 T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
@@ -300,20 +302,24 @@ class TelegramBotController:
                     results[chat_id] = False
                     logger.error(f"Unexpected error sending to {chat_id}: {e}")
         finally:
-            try:
-                session = getattr(bot, "session", None)
-                if session is not None:
-                    aclose = getattr(session, "aclose", None)
-                    close = getattr(session, "close", None)
-                    if callable(aclose):
-                        await aclose()
-                        logger.debug("Bot session closed (async)")
-                    elif callable(close):
-                        close()
-                        logger.debug("Bot session closed (sync)")
-            except Exception as e:
-                logger.warning(f"Failed to close bot session: {e}")
+            await self._close_bot_session(bot)
         return results
+
+    async def _close_bot_session(self, bot: Bot) -> None:
+        """Close a Bot's HTTP session, tolerating both async and sync session types."""
+        try:
+            session = getattr(bot, "session", None)
+            if session is not None:
+                aclose = getattr(session, "aclose", None)
+                close = getattr(session, "close", None)
+                if callable(aclose):
+                    await aclose()
+                    logger.debug("Bot session closed (async)")
+                elif callable(close):
+                    close()
+                    logger.debug("Bot session closed (sync)")
+        except Exception as e:
+            logger.warning(f"Failed to close bot session: {e}")
 
     async def send_message(
         self,
@@ -406,6 +412,78 @@ class TelegramBotController:
             ),
             on_error=False,
             error_label=f"send_to_chat_sync (chat_id={chat_id})",
+        )
+
+    async def send_rich_message(
+        self,
+        chat_id: str,
+        rich_message: InputRichMessage,
+        *,
+        message_thread_id: Optional[int] = None,
+        disable_notification: bool = False,
+        protect_content: bool = False,
+    ) -> bool:
+        """
+        Send a rich message (Bot API 10.1) to a single chat.
+
+        Rich content -- tables, lists, headings, formulas, media, etc. -- is carried
+        as an extended HTML or Markdown string inside `rich_message`; see
+        InputRichMessage. Unlike send_message, the text is passed through untouched
+        (no HTML escaping, tag repair, or splitting), since the caller supplies
+        deliberate rich markup.
+
+        python-telegram-bot 22.5 has no sendRichMessage wrapper, so this calls the
+        endpoint directly via Bot.do_api_request.
+
+        Returns True on success, False on failure (errors are logged, not raised).
+        """
+        api_kwargs: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "rich_message": rich_message.to_dict(),
+        }
+        if message_thread_id is not None:
+            api_kwargs["message_thread_id"] = message_thread_id
+        if disable_notification:
+            api_kwargs["disable_notification"] = True
+        if protect_content:
+            api_kwargs["protect_content"] = True
+
+        bot = Bot(token=self.bot_token)
+        try:
+            await self._wait_for_rate_limit(chat_id)
+            await bot.do_api_request("sendRichMessage", api_kwargs=api_kwargs)
+            self._record_send(chat_id)
+            logger.debug(f"Rich message sent successfully to {chat_id}")
+            return True
+        except TelegramError as e:
+            logger.error(f"Telegram error sending rich message to {chat_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error sending rich message to {chat_id}: {e}")
+            return False
+        finally:
+            await self._close_bot_session(bot)
+
+    def send_rich_message_sync(
+        self,
+        chat_id: str,
+        rich_message: InputRichMessage,
+        *,
+        message_thread_id: Optional[int] = None,
+        disable_notification: bool = False,
+        protect_content: bool = False,
+    ) -> bool:
+        """Synchronously send a rich message, blocking until completion."""
+        return self._run_async_sync(
+            self.send_rich_message(
+                chat_id=chat_id,
+                rich_message=rich_message,
+                message_thread_id=message_thread_id,
+                disable_notification=disable_notification,
+                protect_content=protect_content,
+            ),
+            on_error=False,
+            error_label=f"send_rich_message_sync (chat_id={chat_id})",
         )
 
     async def send_formatted(

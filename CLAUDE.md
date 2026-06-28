@@ -84,10 +84,23 @@ source bin/activate && setup-telegram-webhook --token YOUR_TOKEN --info
 
 **TelegramBotController** (`src/byteforge_telegram/notifier.py`)
 - Main class for sending Telegram notifications
-- Supports both sync (`send_message_sync`, `send_formatted_sync`) and async (`send_message`, `send_formatted`) methods
+- Constructor takes `bot_token` and optional `rate_limit_seconds` (defaults to `DEFAULT_RATE_LIMIT_SECONDS = 1.1`)
+- Sync/async method pairs:
+  - `send_message` / `send_message_sync` - fan-out to one or more chat_ids
+  - `send_to_chat` / `send_to_chat_sync` - send to a single chat, optionally targeting a supergroup topic via `message_thread_id`
+  - `send_formatted` / `send_formatted_sync` - HTML-formatted title/fields/footer messages
+  - `send_rich_message` / `send_rich_message_sync` - send a Rich Message (Bot API 10.1); see below
+  - `test_connection` / `test_connection_sync` - verify the bot can reach a chat_id
 - Creates fresh Bot instances per call to avoid event loop conflicts
 - Handles automatic session cleanup to prevent connection leaks
-- Key design: Uses `_send_with_new_bot()` pattern to create disposable Bot instances
+- Per-chat rate limiting: throttles sends per chat_id to respect Telegram limits
+- Auto-splits messages longer than `TELEGRAM_MAX_MESSAGE_LENGTH` (4096) into chunks
+- Key design: Uses `_send_with_new_bot()` pattern to create disposable Bot instances; send parameters are bundled in the `_SendOptions` dataclass
+
+**Module-level helpers** (`src/byteforge_telegram/notifier.py`, exported from the package)
+- `split_message(text, max_length=4096)` - splits long text into Telegram-sized chunks
+- `repair_html_tags(text)` - balances/repairs HTML tags so unbalanced markup doesn't silently fail delivery (only `TELEGRAM_ALLOWED_TAGS` are treated as markup)
+- `escape_telegram_html(text)` - escapes HTML entities while preserving intentional formatting tags
 
 **WebhookManager** (`src/byteforge_telegram/webhook.py`)
 - Manages Telegram webhook configuration via REST API
@@ -106,6 +119,20 @@ source bin/activate && setup-telegram-webhook --token YOUR_TOKEN --info
 - Primary method: `to_dict()` - converts to dict for JSON serialization
 - Supports reply_markup for inline keyboards and other Telegram features
 - Default parse_mode is HTML
+
+**InputRichMessage** (`src/byteforge_telegram/models.py`)
+- Dataclass for the Bot API 10.1 `sendRichMessage` payload
+- Fields: `html` / `markdown` (exactly one required), `is_rtl`, `skip_entity_detection`
+- `__post_init__` enforces the "exactly one of html/markdown" rule
+- `to_dict()` omits unset/false fields
+
+### Rich Messages (Bot API 10.1)
+
+- Rich content (tables, lists, headings, formulas, media, collages, etc.) is **not** built as a tree of block objects. You send it as a single **extended HTML or Markdown string** inside an `InputRichMessage`, via `send_rich_message()` / `send_rich_message_sync()`.
+- The extended HTML dialect adds tags on top of the classic set: `table/tr/td/th`, `ul/ol/li`, `h1`-`h6`, `details/summary`, `figure/figcaption/img/video/audio`, `tg-math`/`tg-math-block`, `tg-collage`, `tg-slideshow`, `tg-map`, `tg-thinking`, `tg-reference`, `tg-time`, `mark`, `sub`, `sup`, `aside`, `cite`, etc.
+- Rich text is passed through **untouched** - no HTML escaping, tag repair, or message splitting (the caller supplies deliberate rich markup).
+- `python-telegram-bot` 22.5 has no `sendRichMessage` wrapper, so the controller calls the endpoint directly via `Bot.do_api_request("sendRichMessage", api_kwargs=...)`, reusing the same per-call Bot + session-cleanup pattern.
+- The `RichBlock` / `RichText` class hierarchy in the Bot API docs is the **received/parsed** representation of incoming rich messages and is intentionally **not** modeled here (this is a send-focused library).
 
 ### Sync/Async Design Pattern
 
@@ -126,6 +153,12 @@ The library handles both sync and async contexts by:
 - Default parse mode: `ParseMode.HTML`
 - `send_formatted()` builds HTML-formatted messages with title, key-value fields, optional emoji, and footer
 - All formatting is HTML-based (bold with `<b>`, italic with `<i>`)
+- Outgoing text is preprocessed (`_preprocess_text`): HTML entities are escaped while preserving allowed formatting tags, and unbalanced tags are repaired so malformed markup doesn't cause Telegram to silently drop the message
+
+### Rate Limiting & Message Splitting
+
+- The controller throttles sends on a per-chat_id basis (`rate_limit_seconds`, default 1.1s) to stay within Telegram limits
+- Messages exceeding `TELEGRAM_MAX_MESSAGE_LENGTH` (4096) are automatically split into multiple chunks via `split_message()` and sent in sequence
 
 ## Important Patterns
 
@@ -176,9 +209,9 @@ There are **two patterns** for handling Telegram webhooks:
 ```
 src/byteforge_telegram/
 ├── __init__.py          # Package exports
-├── notifier.py          # TelegramBotController and ParseMode
+├── notifier.py          # TelegramBotController, ParseMode, and HTML/splitting helpers
 ├── webhook.py           # WebhookManager
-├── models.py            # TelegramResponse dataclass
+├── models.py            # TelegramResponse and InputRichMessage dataclasses
 └── cli.py               # CLI entry point
 ```
 
@@ -199,7 +232,7 @@ src/byteforge_telegram/
 
 ## Testing Notes
 
-- No test files exist yet in the repository
+- Test suite lives in `tests/`: `test_notifier.py`, `test_webhook.py`, `test_models.py`, `test_cli.py`, `test_html_escaping.py`, `test_rich_message.py`, `test_async_context_fix.py`
 - When adding tests, use `pytest-asyncio` for async test support
 - Test both sync and async methods
 - Mock Telegram API calls to avoid real API usage
@@ -208,6 +241,6 @@ src/byteforge_telegram/
 
 ## Version Management
 
-- Version is defined in `pyproject.toml` (currently 0.1.0)
+- Version is defined in `pyproject.toml` (currently 0.3.0)
 - Version must also be updated in `src/byteforge_telegram/__init__.py`
 - When bumping version, update both files to keep them in sync

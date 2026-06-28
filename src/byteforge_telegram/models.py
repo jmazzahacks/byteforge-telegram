@@ -47,3 +47,44 @@ class TelegramResponse:
             result['disable_notification'] = True
 
         return result
+
+
+@dataclass
+class InputRichMessage:
+    """
+    A rich message to send via Bot API 10.1 sendRichMessage (TelegramBotController.send_rich_message).
+
+    Rich content -- tables, lists, headings, formulas (tg-math), media, collages,
+    etc. -- is expressed as a single extended HTML or Markdown string (Telegram's
+    "Rich Message Formatting Options"), not as a tree of block objects. Exactly one
+    of `html` or `markdown` must be provided.
+    """
+
+    html: Optional[str] = None
+    markdown: Optional[str] = None
+    is_rtl: bool = False
+    skip_entity_detection: bool = False
+
+    def __post_init__(self) -> None:
+        # Treat an empty string as "not provided" so the check fails fast with a
+        # clear error rather than letting Telegram reject an empty message body.
+        if bool(self.html) == bool(self.markdown):
+            raise ValueError("Exactly one of html or markdown must be provided")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to the InputRichMessage dict expected by the Bot API."""
+        result: Dict[str, Any] = {}
+
+        if self.html:
+            result['html'] = self.html
+
+        if self.markdown:
+            result['markdown'] = self.markdown
+
+        if self.is_rtl:
+            result['is_rtl'] = True
+
+        if self.skip_entity_detection:
+            result['skip_entity_detection'] = True
+
+        return result
