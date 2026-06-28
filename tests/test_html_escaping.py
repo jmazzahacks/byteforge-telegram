@@ -443,6 +443,60 @@ class TestRepairHtmlTags:
         assert repaired_again == result
 
 
+class TestSpoilerAndBlockquote:
+    """Spoiler (tg-spoiler / span.tg-spoiler) and expandable blockquote handling."""
+
+    def test_tg_spoiler_tag_preserved(self):
+        """The <tg-spoiler> form should pass through unchanged."""
+        text = "<tg-spoiler>secret</tg-spoiler>"
+        assert repair_html_tags(text) == text
+
+    def test_span_spoiler_preserved(self):
+        """<span class="tg-spoiler"> is a valid Telegram spoiler and must survive."""
+        text = '<span class="tg-spoiler">secret</span>'
+        result = repair_html_tags(text)
+        assert "tg-spoiler" in result
+        assert "secret" in result
+        # The span wrapper must NOT be stripped — otherwise the spoiler leaks.
+        assert "<span" in result
+        assert "</span>" in result
+
+    def test_plain_span_unwrapped(self):
+        """A span without the tg-spoiler class is not Telegram markup; unwrap it."""
+        result = repair_html_tags('<span style="color:red">visible</span>')
+        assert "<span" not in result
+        assert "visible" in result
+
+    def test_expandable_blockquote_attribute_preserved(self):
+        """Expandable quotes use the `expandable` attribute, not a separate tag."""
+        text = "<blockquote expandable>quoted</blockquote>"
+        result = repair_html_tags(text)
+        assert "<blockquote" in result
+        assert "expandable" in result
+        assert "quoted" in result
+
+    @pytest.mark.asyncio
+    async def test_send_message_preserves_span_spoiler(self):
+        """End-to-end: a span spoiler survives the escape + repair pipeline."""
+        controller = TelegramBotController("test_token")
+
+        with patch("byteforge_telegram.notifier.Bot") as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.send_message = AsyncMock()
+
+            await controller.send_message(
+                text='<span class="tg-spoiler">surprise</span>',
+                chat_ids=["123"],
+                parse_mode=ParseMode.HTML,
+            )
+
+            result = mock_bot.send_message.call_args.kwargs["text"]
+            assert "tg-spoiler" in result
+            assert "surprise" in result
+            assert "&lt;span" not in result  # not escaped into literal text
+
+
 # --- Plain text fallback tests ---
 
 

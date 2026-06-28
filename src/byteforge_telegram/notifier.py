@@ -41,8 +41,8 @@ def escape_telegram_html(text: str) -> str:
     - code: inline code
     - pre: preformatted block
     - a: hyperlink
-    - blockquote, expandable_blockquote: quote
-    - tg-spoiler: spoiler
+    - blockquote (with optional expandable attribute): quote
+    - tg-spoiler, span (with class="tg-spoiler"): spoiler
     - tg-emoji: custom emoji
 
     Example:
@@ -59,7 +59,7 @@ def escape_telegram_html(text: str) -> str:
     # Includes optional attributes for tags like <a href="..."> and <tg-emoji emoji-id="...">
     allowed_tags_pattern = (
         r'</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|blockquote|'
-        r'expandable_blockquote|tg-spoiler|tg-emoji)(?:\s+[^>]*)?>'
+        r'span|tg-spoiler|tg-emoji)(?:\s+[^>]*)?>'
     )
 
     # Split text into tag and non-tag segments
@@ -102,8 +102,14 @@ def repair_html_tags(text: str) -> str:
     """
     soup = BeautifulSoup(text, "html.parser")
 
-    # Remove any tags that aren't in Telegram's allowed set
+    # Remove any tags that aren't in Telegram's allowed set. <span> is a special
+    # case: Telegram only treats it as markup when it carries class="tg-spoiler"
+    # (the alternate spelling of <tg-spoiler>); any other span is unwrapped.
     for tag in soup.find_all(True):
+        if tag.name == "span":
+            if "tg-spoiler" not in (tag.get("class") or []):
+                tag.unwrap()
+            continue
         if tag.name not in TELEGRAM_ALLOWED_TAGS:
             tag.unwrap()
 
