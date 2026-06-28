@@ -86,3 +86,5 @@ dmypy.json
 # Test scripts and bug reports (throwaway files)
 test_*.py
 telegram_*.md
+# ...but real test files under tests/ must be tracked
+!tests/test_*.py
