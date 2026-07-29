@@ -8,6 +8,7 @@ A generic, reusable Python library for Telegram bot notifications and webhook ma
   - Plain text messages
   - Formatted messages with title, fields, and footer
   - Rich Messages (Bot API 10.1): tables, lists, headings, formulas, media — see [docs/rich-messages.md](docs/rich-messages.md)
+  - Inline keyboards: attach buttons to sends, answer callback queries, edit sent messages
   - Both sync and async support
   - Automatic event loop handling
   - Session cleanup to prevent leaks
@@ -76,6 +77,43 @@ bot.send_to_chat_sync(
     message_thread_id=42,        # the topic within it
 )
 ```
+
+### Inline Keyboards and Callback Queries
+
+Attach an inline keyboard to a single-chat send, then react to button taps and
+edit the delivered message. `send_to_chat_sync` returns the sent `message_id`
+(or `None` on failure), which you store to edit the message later:
+
+```python
+keyboard = {
+    "inline_keyboard": [[
+        {"text": "✅ Approve", "callback_data": "approve:abc123"},
+        {"text": "✖ Reject", "callback_data": "reject:abc123"},
+    ]]
+}
+
+message_id = bot.send_to_chat_sync(
+    chat_id="YOUR_CHAT_ID",
+    text="<b>Escalation:</b> agent needs approval",
+    reply_markup=keyboard,
+)
+
+# Later, in your webhook handler for the callback_query update:
+bot.answer_callback_query_sync(callback_query_id, text="Approved!")
+
+# Rewrite the message so the buttons disappear and the outcome is shown
+bot.edit_message_text_sync(
+    chat_id="YOUR_CHAT_ID",
+    message_id=message_id,
+    text="<b>Escalation:</b> approved by Jason",
+)
+```
+
+The `reply_markup` dict is passed to the Bot API untouched. If the text is long
+enough to be split into multiple messages, the keyboard attaches to the last
+chunk, and the returned `message_id` is that last chunk's — so it is always the
+right target for `edit_message_text_sync`. Editing without `reply_markup`
+removes any existing keyboard; pass the keyboard again to keep it.
 
 ### Sending a Rich Message
 
@@ -158,9 +196,15 @@ setup-telegram-webhook --token YOUR_BOT_TOKEN --delete
 - Send a plain text message (synchronous)
 - Returns: `Dict[str, bool]` - success status for each chat
 
-**`send_to_chat_sync(chat_id, text, *, message_thread_id=None, ...)`**
+**`send_to_chat_sync(chat_id, text, *, message_thread_id=None, reply_markup=None, ...)`**
 - Send a message to a single chat, optionally targeting a supergroup topic
-- Returns: `bool` - success status
+- Returns: `Optional[int]` - the sent message's `message_id`, or `None` if the send
+  did not fully succeed (truthy on success, so existing boolean-style checks keep
+  working; on a multi-chunk send, `None` can mean earlier chunks were already
+  delivered, so retrying may duplicate them)
+- `reply_markup` takes a Bot API dict, e.g. `{"inline_keyboard": [[{"text": ..., "callback_data": ...}]]}`;
+  when the text is split into chunks it attaches to the last chunk, whose
+  `message_id` is the one returned
 - Use this instead of `send_message_sync` when you need `message_thread_id`,
   since a thread id is only meaningful for one specific supergroup.
 
@@ -173,7 +217,18 @@ setup-telegram-webhook --token YOUR_BOT_TOKEN --delete
 - Returns: `bool` - success status
 - Content is sent as-is (no escaping/repair/splitting). See [docs/rich-messages.md](docs/rich-messages.md)
 
-**`send_message(...)` / `send_to_chat(...)` / `send_formatted(...)` / `send_rich_message(...)`**
+**`edit_message_text_sync(chat_id, message_id, text, *, parse_mode=ParseMode.HTML, reply_markup=None, ...)`**
+- Edit the text (and inline keyboard) of a previously sent message
+- Returns: `bool` - success status
+- Omitting `reply_markup` removes any existing keyboard; text is not split, so it
+  must fit in one message (4096 chars)
+
+**`answer_callback_query_sync(callback_query_id, *, text=None, show_alert=False)`**
+- Answer an inline keyboard button tap (clears the spinner Telegram shows on the button)
+- Returns: `bool` - success status
+- `text` appears as a toast, or a modal alert with `show_alert=True`
+
+**`send_message(...)` / `send_to_chat(...)` / `send_formatted(...)` / `send_rich_message(...)` / `edit_message_text(...)` / `answer_callback_query(...)`**
 - Async versions of the above methods
 - Use with `await` in async contexts
 

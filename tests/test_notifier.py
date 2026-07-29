@@ -143,7 +143,7 @@ class TestTelegramBotController:
 
             # First call succeeds, second fails
             mock_bot.send_message = AsyncMock(
-                side_effect=[None, TelegramError("Error")]
+                side_effect=[Mock(message_id=1), TelegramError("Error")]
             )
 
             result = await controller.send_message(
@@ -307,13 +307,13 @@ class TestTelegramBotController:
 
     @pytest.mark.asyncio
     async def test_send_to_chat_forwards_thread_id(self):
-        """send_to_chat passes message_thread_id through to Bot.send_message."""
+        """send_to_chat passes message_thread_id through and returns the message_id."""
         controller = TelegramBotController("test_token")
 
         with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
             mock_bot = AsyncMock()
             mock_bot_class.return_value = mock_bot
-            mock_bot.send_message = AsyncMock()
+            mock_bot.send_message = AsyncMock(return_value=Mock(message_id=555))
 
             result = await controller.send_to_chat(
                 chat_id="-1001234567890",
@@ -321,7 +321,7 @@ class TestTelegramBotController:
                 message_thread_id=42,
             )
 
-            assert result is True
+            assert result == 555
             mock_bot.send_message.assert_called_once()
             kwargs = mock_bot.send_message.call_args.kwargs
             assert kwargs["chat_id"] == "-1001234567890"
@@ -336,21 +336,21 @@ class TestTelegramBotController:
         with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
             mock_bot = AsyncMock()
             mock_bot_class.return_value = mock_bot
-            mock_bot.send_message = AsyncMock()
+            mock_bot.send_message = AsyncMock(return_value=Mock(message_id=1))
 
             result = await controller.send_to_chat(
                 chat_id="123",
                 text="plain",
             )
 
-            assert result is True
+            assert result == 1
             kwargs = mock_bot.send_message.call_args.kwargs
             assert kwargs["message_thread_id"] is None
             assert kwargs["chat_id"] == "123"
 
     @pytest.mark.asyncio
-    async def test_send_to_chat_failure_returns_false(self):
-        """send_to_chat returns False when the underlying send fails."""
+    async def test_send_to_chat_failure_returns_none(self):
+        """send_to_chat returns None when the underlying send fails."""
         controller = TelegramBotController("test_token")
 
         with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
@@ -364,16 +364,65 @@ class TestTelegramBotController:
                 message_thread_id=7,
             )
 
-            assert result is False
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_send_to_chat_forwards_reply_markup(self):
+        """send_to_chat passes an inline keyboard dict through untouched."""
+        controller = TelegramBotController("test_token")
+        keyboard = {"inline_keyboard": [[{"text": "Approve", "callback_data": "ok"}]]}
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.send_message = AsyncMock(return_value=Mock(message_id=7))
+
+            result = await controller.send_to_chat(
+                chat_id="123",
+                text="approve?",
+                reply_markup=keyboard,
+            )
+
+            assert result == 7
+            kwargs = mock_bot.send_message.call_args.kwargs
+            assert kwargs["reply_markup"] == keyboard
+
+    @pytest.mark.asyncio
+    async def test_send_to_chat_reply_markup_on_last_chunk_only(self):
+        """When the text splits into chunks, the keyboard attaches to the last chunk only."""
+        controller = TelegramBotController("test_token", rate_limit_seconds=0)
+        keyboard = {"inline_keyboard": [[{"text": "Approve", "callback_data": "ok"}]]}
+        long_text = "word " * 1500  # > 4096 chars, splits into multiple chunks
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.send_message = AsyncMock(
+                side_effect=[Mock(message_id=10), Mock(message_id=11)]
+            )
+
+            result = await controller.send_to_chat(
+                chat_id="123",
+                text=long_text,
+                reply_markup=keyboard,
+            )
+
+            assert mock_bot.send_message.call_count == 2
+            first_kwargs = mock_bot.send_message.call_args_list[0].kwargs
+            last_kwargs = mock_bot.send_message.call_args_list[1].kwargs
+            assert first_kwargs["reply_markup"] is None
+            assert last_kwargs["reply_markup"] == keyboard
+            # The returned message_id is the last chunk's — the keyboard-bearing message
+            assert result == 11
 
     def test_send_to_chat_sync(self):
-        """Sync wrapper returns a bool and forwards thread id."""
+        """Sync wrapper returns the message_id and forwards thread id."""
         controller = TelegramBotController("test_token")
 
         with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
             mock_bot = AsyncMock()
             mock_bot_class.return_value = mock_bot
-            mock_bot.send_message = AsyncMock()
+            mock_bot.send_message = AsyncMock(return_value=Mock(message_id=321))
 
             result = controller.send_to_chat_sync(
                 chat_id="-1001234567890",
@@ -381,10 +430,174 @@ class TestTelegramBotController:
                 message_thread_id=99,
             )
 
-            assert isinstance(result, bool)
-            assert result is True
+            assert result == 321
             kwargs = mock_bot.send_message.call_args.kwargs
             assert kwargs["message_thread_id"] == 99
+
+    def test_send_to_chat_sync_failure_returns_none(self):
+        """Sync wrapper returns None when the send fails."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.send_message = AsyncMock(side_effect=TelegramError("nope"))
+
+            result = controller.send_to_chat_sync(
+                chat_id="123",
+                text="hi",
+            )
+
+            assert result is None
+
+    @pytest.mark.asyncio
+    async def test_edit_message_text(self):
+        """edit_message_text forwards text, ids, and reply_markup to Bot.edit_message_text."""
+        controller = TelegramBotController("test_token")
+        keyboard = {"inline_keyboard": [[{"text": "Open", "url": "https://example.com"}]]}
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.edit_message_text = AsyncMock()
+
+            result = await controller.edit_message_text(
+                chat_id="123",
+                message_id=555,
+                text="<b>Approved by Jason</b>",
+                reply_markup=keyboard,
+            )
+
+            assert result is True
+            mock_bot.edit_message_text.assert_called_once()
+            kwargs = mock_bot.edit_message_text.call_args.kwargs
+            assert kwargs["chat_id"] == "123"
+            assert kwargs["message_id"] == 555
+            assert kwargs["text"] == "<b>Approved by Jason</b>"
+            assert kwargs["parse_mode"] == "HTML"
+            assert kwargs["reply_markup"] == keyboard
+
+    @pytest.mark.asyncio
+    async def test_edit_message_text_strips_keyboard_by_default(self):
+        """Omitting reply_markup passes None, which removes an existing keyboard."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.edit_message_text = AsyncMock()
+
+            result = await controller.edit_message_text(
+                chat_id="123",
+                message_id=555,
+                text="done",
+            )
+
+            assert result is True
+            kwargs = mock_bot.edit_message_text.call_args.kwargs
+            assert kwargs["reply_markup"] is None
+
+    @pytest.mark.asyncio
+    async def test_edit_message_text_failure(self):
+        """edit_message_text returns False on TelegramError."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.edit_message_text = AsyncMock(
+                side_effect=TelegramError("message is not modified")
+            )
+
+            result = await controller.edit_message_text(
+                chat_id="123",
+                message_id=555,
+                text="same text",
+            )
+
+            assert result is False
+
+    def test_edit_message_text_sync(self):
+        """Sync wrapper for edit_message_text returns a bool."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.edit_message_text = AsyncMock()
+
+            keyboard = {"inline_keyboard": [[{"text": "Open", "url": "https://example.com"}]]}
+            result = controller.edit_message_text_sync(
+                chat_id="123",
+                message_id=1,
+                text="hi",
+                reply_markup=keyboard,
+            )
+
+            assert result is True
+            kwargs = mock_bot.edit_message_text.call_args.kwargs
+            assert kwargs["chat_id"] == "123"
+            assert kwargs["message_id"] == 1
+            assert kwargs["text"] == "hi"
+            assert kwargs["reply_markup"] == keyboard
+
+    @pytest.mark.asyncio
+    async def test_answer_callback_query(self):
+        """answer_callback_query forwards id, text, and show_alert."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.answer_callback_query = AsyncMock()
+
+            result = await controller.answer_callback_query(
+                "query-id-1",
+                text="Already handled by Sarah.",
+                show_alert=True,
+            )
+
+            assert result is True
+            mock_bot.answer_callback_query.assert_called_once()
+            kwargs = mock_bot.answer_callback_query.call_args.kwargs
+            assert kwargs["callback_query_id"] == "query-id-1"
+            assert kwargs["text"] == "Already handled by Sarah."
+            assert kwargs["show_alert"] is True
+
+    @pytest.mark.asyncio
+    async def test_answer_callback_query_failure(self):
+        """answer_callback_query returns False on TelegramError."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.answer_callback_query = AsyncMock(
+                side_effect=TelegramError("query is too old")
+            )
+
+            result = await controller.answer_callback_query("query-id-1")
+
+            assert result is False
+
+    def test_answer_callback_query_sync(self):
+        """Sync wrapper for answer_callback_query returns a bool."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.answer_callback_query = AsyncMock()
+
+            result = controller.answer_callback_query_sync(
+                "query-id-1", text="Done", show_alert=True
+            )
+
+            assert result is True
+            kwargs = mock_bot.answer_callback_query.call_args.kwargs
+            assert kwargs["callback_query_id"] == "query-id-1"
+            assert kwargs["text"] == "Done"
+            assert kwargs["show_alert"] is True
 
     def test_test_connection_sync(self):
         """Test synchronous test_connection method."""

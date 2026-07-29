@@ -87,10 +87,13 @@ source bin/activate && setup-telegram-webhook --token YOUR_TOKEN --info
 - Constructor takes `bot_token` and optional `rate_limit_seconds` (defaults to `DEFAULT_RATE_LIMIT_SECONDS = 1.1`)
 - Sync/async method pairs:
   - `send_message` / `send_message_sync` - fan-out to one or more chat_ids
-  - `send_to_chat` / `send_to_chat_sync` - send to a single chat, optionally targeting a supergroup topic via `message_thread_id`
+  - `send_to_chat` / `send_to_chat_sync` - send to a single chat, optionally targeting a supergroup topic via `message_thread_id`; accepts an opaque `reply_markup` dict (inline keyboards) and returns `Optional[int]` — the sent message_id, or None on failure (truthy on success, so boolean-style checks still work)
   - `send_formatted` / `send_formatted_sync` - HTML-formatted title/fields/footer messages
   - `send_rich_message` / `send_rich_message_sync` - send a Rich Message (Bot API 10.1); see below
+  - `edit_message_text` / `edit_message_text_sync` - edit a sent message's text and keyboard; omitting `reply_markup` strips an existing keyboard; text is not split (must fit 4096)
+  - `answer_callback_query` / `answer_callback_query_sync` - answer an inline-button tap (clears the button spinner; optional toast/alert text)
   - `test_connection` / `test_connection_sync` - verify the bot can reach a chat_id
+- Inline keyboard semantics: `reply_markup` is passed to the Bot API untouched (no typed keyboard models); when a long message is split into chunks, the keyboard attaches to the **last** chunk and the returned message_id is that last chunk's — always the right target for `edit_message_text`
 - Creates fresh Bot instances per call to avoid event loop conflicts
 - Handles automatic session cleanup to prevent connection leaks
 - Per-chat rate limiting: throttles sends per chat_id to respect Telegram limits
@@ -241,6 +244,6 @@ src/byteforge_telegram/
 
 ## Version Management
 
-- Version is defined in `pyproject.toml` (currently 0.3.1)
+- Version is defined in `pyproject.toml` (currently 0.4.0)
 - Version must also be updated in `src/byteforge_telegram/__init__.py`
 - When bumping version, update both files to keep them in sync

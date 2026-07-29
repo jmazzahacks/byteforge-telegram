@@ -516,7 +516,7 @@ class TestPlainTextFallback:
             mock_bot.send_message = AsyncMock(
                 side_effect=[
                     TelegramError("Can't parse entities: unexpected end tag at byte offset 585"),
-                    None,  # plain text retry succeeds
+                    MagicMock(message_id=1),  # plain text retry succeeds
                 ]
             )
 

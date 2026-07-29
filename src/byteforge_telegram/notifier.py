@@ -177,6 +177,9 @@ class _SendOptions:
     disable_web_page_preview: bool = False
     disable_notification: bool = False
     message_thread_id: Optional[int] = None
+    # Attached to the LAST chunk only when a message is split, so the buttons
+    # sit at the bottom of the final delivered message.
+    reply_markup: Optional[Dict[str, Any]] = None
 
 
 class TelegramBotController:
@@ -237,50 +240,70 @@ class TelegramBotController:
         chunks: List[str],
         chat_id: str,
         options: _SendOptions,
-    ) -> bool:
-        """Strip HTML tags from chunks and send as plain text. Used as fallback on parse errors."""
-        for chunk in chunks:
+    ) -> Optional[int]:
+        """
+        Strip HTML tags from chunks and send as plain text. Used as fallback on parse errors.
+
+        Returns the message_id of the last sent chunk.
+        """
+        last_message_id: Optional[int] = None
+        for i, chunk in enumerate(chunks):
+            is_last_chunk = i == len(chunks) - 1
             stripped = re.sub(r'<[^>]+>', '', chunk)
             await self._wait_for_rate_limit(chat_id)
-            await bot.send_message(
+            message = await bot.send_message(
                 chat_id=chat_id,
                 text=stripped,
                 parse_mode=None,
                 disable_web_page_preview=options.disable_web_page_preview,
                 disable_notification=options.disable_notification,
                 message_thread_id=options.message_thread_id,
+                # PTB serializes a plain dict fine; opaque pass-through is deliberate
+                reply_markup=options.reply_markup if is_last_chunk else None,  # type: ignore[arg-type]
             )
             self._record_send(chat_id)
-        return True
+            last_message_id = getattr(message, "message_id", None)
+        return last_message_id
 
     async def _send_with_new_bot(
         self,
         text: str,
         chat_ids: List[str],
         options: _SendOptions,
-    ) -> Dict[str, bool]:
+    ) -> Dict[str, Optional[int]]:
+        """
+        Send text to each chat, splitting into chunks as needed.
+
+        Returns a dict mapping chat_id to the message_id of the last chunk sent
+        (the one carrying any reply_markup), or None if the send failed.
+        """
         if not chat_ids:
             logger.warning("No chat_ids provided")
             return {}
 
         chunks = split_message(text)
         bot = Bot(token=self.bot_token)
-        results: Dict[str, bool] = {}
+        results: Dict[str, Optional[int]] = {}
         try:
             for chat_id in chat_ids:
                 try:
-                    for chunk in chunks:
+                    last_message_id: Optional[int] = None
+                    for i, chunk in enumerate(chunks):
+                        is_last_chunk = i == len(chunks) - 1
                         await self._wait_for_rate_limit(chat_id)
-                        await bot.send_message(
+                        message = await bot.send_message(
                             chat_id=chat_id,
                             text=chunk,
                             parse_mode=options.parse_mode.value if options.parse_mode else None,
                             disable_web_page_preview=options.disable_web_page_preview,
                             disable_notification=options.disable_notification,
                             message_thread_id=options.message_thread_id,
+                            # PTB serializes a plain dict fine; opaque pass-through is deliberate
+                            reply_markup=options.reply_markup if is_last_chunk else None,  # type: ignore[arg-type]
                         )
                         self._record_send(chat_id)
-                    results[chat_id] = True
+                        last_message_id = getattr(message, "message_id", None)
+                    results[chat_id] = last_message_id
                     logger.debug(f"Message sent successfully to {chat_id} ({len(chunks)} chunk(s))")
                 except TelegramError as e:
                     if "Can't parse entities" in str(e) and options.parse_mode:
@@ -293,13 +316,13 @@ class TelegramBotController:
                             )
                             logger.debug(f"Plain text fallback succeeded for {chat_id}")
                         except Exception as retry_err:
-                            results[chat_id] = False
+                            results[chat_id] = None
                             logger.error(f"Plain text fallback failed for {chat_id}: {retry_err}")
                     else:
-                        results[chat_id] = False
+                        results[chat_id] = None
                         logger.error(f"Telegram error for chat {chat_id}: {e}")
                 except Exception as e:
-                    results[chat_id] = False
+                    results[chat_id] = None
                     logger.error(f"Unexpected error sending to {chat_id}: {e}")
         finally:
             await self._close_bot_session(bot)
@@ -330,7 +353,7 @@ class TelegramBotController:
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
     ) -> Dict[str, bool]:
-        return await self._send_with_new_bot(
+        results = await self._send_with_new_bot(
             text=self._preprocess_text(text, parse_mode),
             chat_ids=chat_ids,
             options=_SendOptions(
@@ -339,6 +362,7 @@ class TelegramBotController:
                 disable_notification=disable_notification,
             ),
         )
+        return {chat_id: message_id is not None for chat_id, message_id in results.items()}
 
     def send_message_sync(
         self,
@@ -371,12 +395,24 @@ class TelegramBotController:
         parse_mode: ParseMode = ParseMode.HTML,
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
-    ) -> bool:
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
         """
         Send to a single chat, optionally targeting a supergroup topic.
 
         A thread id only applies to one supergroup, so this method takes a single
         chat_id rather than a list. Use send_message for fan-out without topics.
+
+        reply_markup is passed through to the Bot API untouched, e.g.
+        {"inline_keyboard": [[{"text": "Approve", "callback_data": "..."}]]}.
+        If the text is split into multiple chunks, the keyboard attaches to the
+        last chunk only.
+
+        Returns the message_id of the sent message (the last chunk when split,
+        which is also the one carrying any reply_markup — the right target for
+        edit_message_text), or None if the send did not fully succeed. On a
+        multi-chunk send, None can mean earlier chunks were already delivered,
+        so retrying on None may duplicate them.
         """
         results = await self._send_with_new_bot(
             text=self._preprocess_text(text, parse_mode),
@@ -386,9 +422,10 @@ class TelegramBotController:
                 disable_web_page_preview=disable_web_page_preview,
                 disable_notification=disable_notification,
                 message_thread_id=message_thread_id,
+                reply_markup=reply_markup,
             ),
         )
-        return results.get(chat_id, False)
+        return results.get(chat_id)
 
     def send_to_chat_sync(
         self,
@@ -399,8 +436,13 @@ class TelegramBotController:
         parse_mode: ParseMode = ParseMode.HTML,
         disable_web_page_preview: bool = False,
         disable_notification: bool = False,
-    ) -> bool:
-        """Synchronously send to a single chat (optionally a topic), blocking until completion."""
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        """
+        Synchronously send to a single chat (optionally a topic), blocking until completion.
+
+        Returns the sent message_id, or None on failure (see send_to_chat).
+        """
         return self._run_async_sync(
             self.send_to_chat(
                 chat_id=chat_id,
@@ -409,9 +451,130 @@ class TelegramBotController:
                 parse_mode=parse_mode,
                 disable_web_page_preview=disable_web_page_preview,
                 disable_notification=disable_notification,
+                reply_markup=reply_markup,
+            ),
+            on_error=None,
+            error_label=f"send_to_chat_sync (chat_id={chat_id})",
+        )
+
+    async def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: ParseMode = ParseMode.HTML,
+        disable_web_page_preview: bool = False,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Edit the text (and inline keyboard) of a previously sent message.
+
+        Telegram replaces the whole message, so omitting reply_markup removes any
+        existing inline keyboard — pass the keyboard again to keep it. Unlike the
+        send path, the text is not split: edits cannot span messages, so text over
+        TELEGRAM_MAX_MESSAGE_LENGTH will be rejected by Telegram.
+
+        Returns True on success, False on failure (errors are logged, not raised).
+        """
+        bot = Bot(token=self.bot_token)
+        try:
+            await self._wait_for_rate_limit(chat_id)
+            await bot.edit_message_text(
+                text=self._preprocess_text(text, parse_mode),
+                chat_id=chat_id,
+                message_id=message_id,
+                parse_mode=parse_mode.value if parse_mode else None,
+                disable_web_page_preview=disable_web_page_preview,
+                # PTB serializes a plain dict fine; opaque pass-through is deliberate
+                reply_markup=reply_markup,  # type: ignore[arg-type]
+            )
+            self._record_send(chat_id)
+            logger.debug(f"Message {message_id} edited successfully in chat {chat_id}")
+            return True
+        except TelegramError as e:
+            logger.error(f"Telegram error editing message {message_id} in chat {chat_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error editing message {message_id} in chat {chat_id}: {e}")
+            return False
+        finally:
+            await self._close_bot_session(bot)
+
+    def edit_message_text_sync(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: ParseMode = ParseMode.HTML,
+        disable_web_page_preview: bool = False,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Synchronously edit a sent message, blocking until completion."""
+        return self._run_async_sync(
+            self.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode=parse_mode,
+                disable_web_page_preview=disable_web_page_preview,
+                reply_markup=reply_markup,
             ),
             on_error=False,
-            error_label=f"send_to_chat_sync (chat_id={chat_id})",
+            error_label=f"edit_message_text_sync (chat_id={chat_id}, message_id={message_id})",
+        )
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        *,
+        text: Optional[str] = None,
+        show_alert: bool = False,
+    ) -> bool:
+        """
+        Answer a callback query from an inline keyboard button tap.
+
+        Telegram shows a spinner on the tapped button until the bot answers, so
+        this should be called for every callback query, even with no text. An
+        optional text appears as a toast (or a modal alert when show_alert=True).
+
+        Returns True on success, False on failure (errors are logged, not raised).
+        """
+        bot = Bot(token=self.bot_token)
+        try:
+            await bot.answer_callback_query(
+                callback_query_id=callback_query_id,
+                text=text,
+                show_alert=show_alert,
+            )
+            logger.debug(f"Callback query {callback_query_id} answered")
+            return True
+        except TelegramError as e:
+            logger.error(f"Telegram error answering callback query {callback_query_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error answering callback query {callback_query_id}: {e}")
+            return False
+        finally:
+            await self._close_bot_session(bot)
+
+    def answer_callback_query_sync(
+        self,
+        callback_query_id: str,
+        *,
+        text: Optional[str] = None,
+        show_alert: bool = False,
+    ) -> bool:
+        """Synchronously answer a callback query, blocking until completion."""
+        return self._run_async_sync(
+            self.answer_callback_query(
+                callback_query_id=callback_query_id,
+                text=text,
+                show_alert=show_alert,
+            ),
+            on_error=False,
+            error_label=f"answer_callback_query_sync (callback_query_id={callback_query_id})",
         )
 
     async def send_rich_message(
@@ -515,11 +678,12 @@ class TelegramBotController:
             escaped_footer = html.escape(footer)
             parts.append(f"<i>{escaped_footer}</i>")
         message = "\n".join(parts)
-        return await self._send_with_new_bot(
+        results = await self._send_with_new_bot(
             text=message,
             chat_ids=chat_ids,
             options=_SendOptions(parse_mode=ParseMode.HTML),
         )
+        return {chat_id: message_id is not None for chat_id, message_id in results.items()}
 
     def send_formatted_sync(
         self,
