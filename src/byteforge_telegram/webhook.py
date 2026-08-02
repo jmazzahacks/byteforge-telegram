@@ -5,7 +5,7 @@ Provides functions to set, get, and delete Telegram bot webhooks.
 """
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import requests
 
 logger = logging.getLogger(__name__)
@@ -26,13 +26,31 @@ class WebhookManager:
         self.bot_token = bot_token
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
 
-    def set_webhook(self, webhook_url: str, timeout: int = 10) -> Dict[str, Any]:
+    def set_webhook(
+        self,
+        webhook_url: str,
+        timeout: int = 10,
+        allowed_updates: Optional[List[str]] = None,
+        secret_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Set the webhook URL for the Telegram bot.
 
         Args:
             webhook_url: Full HTTPS URL for webhook endpoint
             timeout: Request timeout in seconds (default: 10)
+            allowed_updates: Update types to receive, e.g.
+                ['message', 'callback_query']. NOTE: Telegram treats an
+                omitted allowed_updates as "keep the previous setting" —
+                not "use the default" — so if the webhook was ever
+                registered with a narrow list, only passing this parameter
+                can widen it. Pass an empty list to reset to Telegram's
+                default set.
+            secret_token: Value Telegram will send in the
+                X-Telegram-Bot-Api-Secret-Token header on every webhook
+                request. Unlike allowed_updates this is NOT sticky:
+                omitting it on setWebhook clears any existing secret, so
+                re-supply it on every call if your endpoint validates it.
 
         Returns:
             Dict with 'success' (bool) and 'description' (str)
@@ -44,7 +62,11 @@ class WebhookManager:
             raise ValueError("Webhook URL must use HTTPS")
 
         api_url = f"{self.base_url}/setWebhook"
-        payload = {'url': webhook_url}
+        payload: Dict[str, Any] = {'url': webhook_url}
+        if allowed_updates is not None:
+            payload['allowed_updates'] = allowed_updates
+        if secret_token is not None:
+            payload['secret_token'] = secret_token
 
         try:
             response = requests.post(api_url, json=payload, timeout=timeout)
@@ -53,6 +75,14 @@ class WebhookManager:
 
             if result.get('ok'):
                 logger.info(f"Webhook set successfully: {webhook_url}")
+                # "ok: true" doesn't reveal which update types are actually
+                # registered, so surface the effective setting.
+                info = self.get_webhook_info(timeout=timeout)
+                if info is not None:
+                    effective = info.get('allowed_updates')
+                    logger.info(
+                        f"Effective allowed_updates: {effective if effective else '(Telegram default: all except chat_member, message_reaction, message_reaction_count)'}"
+                    )
                 return {
                     'success': True,
                     'description': result.get('description', 'Webhook was set')

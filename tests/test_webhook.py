@@ -2,6 +2,8 @@
 Tests for WebhookManager.
 """
 
+import logging
+
 import pytest
 from unittest.mock import Mock, patch
 import requests
@@ -27,8 +29,20 @@ class TestWebhookManager:
         with pytest.raises(ValueError, match="bot_token is required"):
             WebhookManager(None)
 
+    @staticmethod
+    def _mock_webhook_info_response(allowed_updates=None):
+        """Response for the getWebhookInfo follow-up made after a successful set."""
+        info = {'url': 'https://example.com/webhook'}
+        if allowed_updates is not None:
+            info['allowed_updates'] = allowed_updates
+        mock_response = Mock()
+        mock_response.json.return_value = {'ok': True, 'result': info}
+        mock_response.raise_for_status = Mock()
+        return mock_response
+
+    @patch('byteforge_telegram.webhook.requests.get')
     @patch('byteforge_telegram.webhook.requests.post')
-    def test_set_webhook_success(self, mock_post):
+    def test_set_webhook_success(self, mock_post, mock_get):
         """Test setting webhook successfully."""
         mock_response = Mock()
         mock_response.json.return_value = {
@@ -37,6 +51,7 @@ class TestWebhookManager:
         }
         mock_response.raise_for_status = Mock()
         mock_post.return_value = mock_response
+        mock_get.return_value = self._mock_webhook_info_response()
 
         manager = WebhookManager("test_token")
         result = manager.set_webhook("https://example.com/webhook")
@@ -49,13 +64,15 @@ class TestWebhookManager:
             timeout=10
         )
 
+    @patch('byteforge_telegram.webhook.requests.get')
     @patch('byteforge_telegram.webhook.requests.post')
-    def test_set_webhook_with_custom_timeout(self, mock_post):
+    def test_set_webhook_with_custom_timeout(self, mock_post, mock_get):
         """Test setting webhook with custom timeout."""
         mock_response = Mock()
         mock_response.json.return_value = {'ok': True, 'description': 'Set'}
         mock_response.raise_for_status = Mock()
         mock_post.return_value = mock_response
+        mock_get.return_value = self._mock_webhook_info_response()
 
         manager = WebhookManager("test_token")
         manager.set_webhook("https://example.com/webhook", timeout=30)
@@ -65,6 +82,97 @@ class TestWebhookManager:
             json={'url': 'https://example.com/webhook'},
             timeout=30
         )
+
+    @patch('byteforge_telegram.webhook.requests.get')
+    @patch('byteforge_telegram.webhook.requests.post')
+    def test_set_webhook_with_allowed_updates(self, mock_post, mock_get, caplog):
+        """allowed_updates is sent in the payload and the effective set is logged."""
+        mock_response = Mock()
+        mock_response.json.return_value = {'ok': True, 'description': 'Set'}
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+        mock_get.return_value = self._mock_webhook_info_response(
+            allowed_updates=['message', 'callback_query']
+        )
+
+        manager = WebhookManager("test_token")
+        with caplog.at_level(logging.INFO, logger='byteforge_telegram.webhook'):
+            result = manager.set_webhook(
+                "https://example.com/webhook",
+                allowed_updates=['message', 'callback_query'],
+            )
+
+        assert result['success'] is True
+        mock_post.assert_called_once_with(
+            "https://api.telegram.org/bottest_token/setWebhook",
+            json={
+                'url': 'https://example.com/webhook',
+                'allowed_updates': ['message', 'callback_query'],
+            },
+            timeout=10
+        )
+        # The effective setting is fetched after a successful set and logged
+        mock_get.assert_called_once()
+        assert "Effective allowed_updates: ['message', 'callback_query']" in caplog.text
+
+    @patch('byteforge_telegram.webhook.requests.get')
+    @patch('byteforge_telegram.webhook.requests.post')
+    def test_set_webhook_with_secret_token(self, mock_post, mock_get):
+        """secret_token is sent in the payload when provided."""
+        mock_response = Mock()
+        mock_response.json.return_value = {'ok': True, 'description': 'Set'}
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+        mock_get.return_value = self._mock_webhook_info_response()
+
+        manager = WebhookManager("test_token")
+        manager.set_webhook(
+            "https://example.com/webhook",
+            allowed_updates=['message'],
+            secret_token='my_secret',
+        )
+
+        mock_post.assert_called_once_with(
+            "https://api.telegram.org/bottest_token/setWebhook",
+            json={
+                'url': 'https://example.com/webhook',
+                'allowed_updates': ['message'],
+                'secret_token': 'my_secret',
+            },
+            timeout=10
+        )
+
+    @patch('byteforge_telegram.webhook.requests.get')
+    @patch('byteforge_telegram.webhook.requests.post')
+    def test_set_webhook_omits_optional_params_by_default(self, mock_post, mock_get):
+        """Omitted allowed_updates/secret_token are absent from the payload entirely."""
+        mock_response = Mock()
+        mock_response.json.return_value = {'ok': True, 'description': 'Set'}
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+        mock_get.return_value = self._mock_webhook_info_response()
+
+        manager = WebhookManager("test_token")
+        manager.set_webhook("https://example.com/webhook")
+
+        payload = mock_post.call_args.kwargs['json']
+        assert 'allowed_updates' not in payload
+        assert 'secret_token' not in payload
+
+    @patch('byteforge_telegram.webhook.requests.get')
+    @patch('byteforge_telegram.webhook.requests.post')
+    def test_set_webhook_succeeds_even_if_info_followup_fails(self, mock_post, mock_get):
+        """A failing getWebhookInfo follow-up doesn't affect the set_webhook result."""
+        mock_response = Mock()
+        mock_response.json.return_value = {'ok': True, 'description': 'Set'}
+        mock_response.raise_for_status = Mock()
+        mock_post.return_value = mock_response
+        mock_get.side_effect = requests.exceptions.ConnectionError("Network error")
+
+        manager = WebhookManager("test_token")
+        result = manager.set_webhook("https://example.com/webhook")
+
+        assert result['success'] is True
 
     def test_set_webhook_non_https_url(self):
         """Test setting webhook with non-HTTPS URL raises ValueError."""

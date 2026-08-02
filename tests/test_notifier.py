@@ -542,6 +542,92 @@ class TestTelegramBotController:
             assert kwargs["reply_markup"] == keyboard
 
     @pytest.mark.asyncio
+    async def test_edit_message_reply_markup(self):
+        """edit_message_reply_markup forwards ids and keyboard, leaving text alone."""
+        controller = TelegramBotController("test_token")
+        keyboard = {"inline_keyboard": [[{"text": "Yes, reject", "callback_data": "confirm"}]]}
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.edit_message_reply_markup = AsyncMock()
+
+            result = await controller.edit_message_reply_markup(
+                chat_id="123",
+                message_id=555,
+                reply_markup=keyboard,
+            )
+
+            assert result is True
+            mock_bot.edit_message_reply_markup.assert_called_once()
+            kwargs = mock_bot.edit_message_reply_markup.call_args.kwargs
+            assert kwargs["chat_id"] == "123"
+            assert kwargs["message_id"] == 555
+            assert kwargs["reply_markup"] == keyboard
+            assert "text" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_edit_message_reply_markup_strips_keyboard_by_default(self):
+        """Omitting reply_markup passes None, which removes the keyboard."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.edit_message_reply_markup = AsyncMock()
+
+            result = await controller.edit_message_reply_markup(
+                chat_id="123",
+                message_id=555,
+            )
+
+            assert result is True
+            kwargs = mock_bot.edit_message_reply_markup.call_args.kwargs
+            assert kwargs["reply_markup"] is None
+
+    @pytest.mark.asyncio
+    async def test_edit_message_reply_markup_failure(self):
+        """edit_message_reply_markup returns False on TelegramError."""
+        controller = TelegramBotController("test_token")
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.edit_message_reply_markup = AsyncMock(
+                side_effect=TelegramError("message is not modified")
+            )
+
+            result = await controller.edit_message_reply_markup(
+                chat_id="123",
+                message_id=555,
+                reply_markup={"inline_keyboard": []},
+            )
+
+            assert result is False
+
+    def test_edit_message_reply_markup_sync(self):
+        """Sync wrapper forwards ids and keyboard to Bot.edit_message_reply_markup."""
+        controller = TelegramBotController("test_token")
+        keyboard = {"inline_keyboard": [[{"text": "Cancel", "callback_data": "cancel"}]]}
+
+        with patch('byteforge_telegram.notifier.Bot') as mock_bot_class:
+            mock_bot = AsyncMock()
+            mock_bot_class.return_value = mock_bot
+            mock_bot.edit_message_reply_markup = AsyncMock()
+
+            result = controller.edit_message_reply_markup_sync(
+                chat_id="123",
+                message_id=42,
+                reply_markup=keyboard,
+            )
+
+            assert result is True
+            kwargs = mock_bot.edit_message_reply_markup.call_args.kwargs
+            assert kwargs["chat_id"] == "123"
+            assert kwargs["message_id"] == 42
+            assert kwargs["reply_markup"] == keyboard
+
+    @pytest.mark.asyncio
     async def test_answer_callback_query(self):
         """answer_callback_query forwards id, text, and show_alert."""
         controller = TelegramBotController("test_token")

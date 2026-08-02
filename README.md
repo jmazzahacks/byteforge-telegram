@@ -14,7 +14,7 @@ A generic, reusable Python library for Telegram bot notifications and webhook ma
   - Session cleanup to prevent leaks
 
 - **WebhookManager**: Manage Telegram webhooks
-  - Set webhook URL
+  - Set webhook URL, `allowed_updates`, and `secret_token`
   - Get webhook information
   - Delete webhook
   - CLI tool included
@@ -115,6 +115,31 @@ chunk, and the returned `message_id` is that last chunk's — so it is always th
 right target for `edit_message_text_sync`. Editing without `reply_markup`
 removes any existing keyboard; pass the keyboard again to keep it.
 
+To change **only the buttons** — e.g. swapping to a confirm/cancel keyboard and
+back — use `edit_message_reply_markup_sync`, which leaves the message text and
+its formatting untouched:
+
+```python
+# Tap "Reject" → ask for confirmation without touching the text
+bot.edit_message_reply_markup_sync(
+    chat_id="YOUR_CHAT_ID",
+    message_id=message_id,
+    reply_markup={"inline_keyboard": [[
+        {"text": "⚠️ Yes, reject", "callback_data": "confirm_reject:abc123"},
+        {"text": "Cancel", "callback_data": "cancel:abc123"},
+    ]]},
+)
+```
+
+Avoid rebuilding text from `callback_query.message.text` for keyboard swaps: that
+field is plain text (Telegram strips HTML formatting into a separate entities
+array) and it reflects the message as *already edited*, not the original. If you
+only need different buttons, edit only the buttons.
+
+> **Buttons do nothing when tapped?** If your webhook was registered before the
+> bot used inline keyboards, Telegram may not be delivering `callback_query`
+> updates at all — see the `allowed_updates` note under Managing Webhooks below.
+
 ### Sending a Rich Message
 
 Rich Messages (Bot API 10.1) support structured content — headings, lists, tables,
@@ -150,8 +175,12 @@ from byteforge_telegram import WebhookManager
 # Initialize manager
 manager = WebhookManager("YOUR_BOT_TOKEN")
 
-# Set webhook
-result = manager.set_webhook("https://example.com/telegram/webhook")
+# Set webhook, declaring which update types to receive
+result = manager.set_webhook(
+    "https://example.com/telegram/webhook",
+    allowed_updates=["message", "callback_query"],
+    secret_token="MY_WEBHOOK_SECRET",  # optional; validate it in your handler
+)
 if result['success']:
     print(f"Webhook set: {result['description']}")
 
@@ -167,6 +196,20 @@ if result['success']:
     print("Webhook deleted")
 ```
 
+**The `allowed_updates` trap.** Telegram treats an *omitted* `allowed_updates`
+as "keep the previous setting", not "use the default". If the webhook was ever
+registered with a narrow list (say `["message"]`), every later `set_webhook`
+call that omits the parameter reports success while silently continuing to
+discard other update types — inline keyboard taps (`callback_query`) never
+reach your endpoint, with no error anywhere. When updates you expect aren't
+arriving, `get_webhook_info()` is the diagnostic: check its `allowed_updates`
+field before suspecting your handler. Pass `allowed_updates` explicitly to
+widen the set, or `[]` to reset to Telegram's default.
+
+`secret_token` has the opposite behavior — it is **not** sticky. Omitting it on
+`set_webhook` clears any existing secret, so if your endpoint validates the
+`X-Telegram-Bot-Api-Secret-Token` header, re-supply the secret on every call.
+
 #### Command-Line Interface
 
 The package includes a `setup-telegram-webhook` CLI tool:
@@ -174,6 +217,13 @@ The package includes a `setup-telegram-webhook` CLI tool:
 ```bash
 # Set webhook
 setup-telegram-webhook --token YOUR_BOT_TOKEN --url https://example.com/telegram/webhook
+
+# Set webhook and declare update types (omitting --allowed-updates KEEPS the
+# previously registered set — see the allowed_updates trap above)
+setup-telegram-webhook --token YOUR_BOT_TOKEN \
+    --url https://example.com/telegram/webhook \
+    --allowed-updates message callback_query \
+    --secret-token MY_WEBHOOK_SECRET
 
 # Or use environment variable
 export TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
@@ -223,12 +273,19 @@ setup-telegram-webhook --token YOUR_BOT_TOKEN --delete
 - Omitting `reply_markup` removes any existing keyboard; text is not split, so it
   must fit in one message (4096 chars)
 
+**`edit_message_reply_markup_sync(chat_id, message_id, *, reply_markup=None)`**
+- Edit only the inline keyboard of a previously sent message; the text and its
+  formatting are left untouched
+- Returns: `bool` - success status
+- Omitting `reply_markup` removes the keyboard (same convention as
+  `edit_message_text_sync`)
+
 **`answer_callback_query_sync(callback_query_id, *, text=None, show_alert=False)`**
 - Answer an inline keyboard button tap (clears the spinner Telegram shows on the button)
 - Returns: `bool` - success status
 - `text` appears as a toast, or a modal alert with `show_alert=True`
 
-**`send_message(...)` / `send_to_chat(...)` / `send_formatted(...)` / `send_rich_message(...)` / `edit_message_text(...)` / `answer_callback_query(...)`**
+**`send_message(...)` / `send_to_chat(...)` / `send_formatted(...)` / `send_rich_message(...)` / `edit_message_text(...)` / `edit_message_reply_markup(...)` / `answer_callback_query(...)`**
 - Async versions of the above methods
 - Use with `await` in async contexts
 
@@ -251,17 +308,25 @@ ParseMode.NONE         # Plain text, no formatting
 
 #### Methods
 
-**`set_webhook(webhook_url, timeout=10)`**
+**`set_webhook(webhook_url, timeout=10, allowed_updates=None, secret_token=None)`**
 - Set the webhook URL for the bot
 - Args:
   - `webhook_url`: HTTPS URL (required)
   - `timeout`: Request timeout in seconds
+  - `allowed_updates`: Update types to receive, e.g. `["message", "callback_query"]`.
+    Omitted means "keep the previous setting" (see the trap above); `[]` resets
+    to Telegram's default
+  - `secret_token`: Value echoed back in the `X-Telegram-Bot-Api-Secret-Token`
+    header. Not sticky — omitting it clears any existing secret
 - Returns: `Dict[str, Any]` with `success` and `description`
 - Raises: `ValueError` if URL is not HTTPS
+- On success, logs the effective `allowed_updates` (fetched via `get_webhook_info`)
 
 **`get_webhook_info(timeout=10)`**
 - Get current webhook configuration
 - Returns: `Dict[str, Any]` with webhook details, or `None` on error
+- The first place to look when expected updates aren't arriving — check the
+  `allowed_updates` field
 
 **`delete_webhook(timeout=10)`**
 - Delete the current webhook

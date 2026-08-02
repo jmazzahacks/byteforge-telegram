@@ -525,6 +525,68 @@ class TelegramBotController:
             error_label=f"edit_message_text_sync (chat_id={chat_id}, message_id={message_id})",
         )
 
+    async def edit_message_reply_markup(
+        self,
+        chat_id: str,
+        message_id: int,
+        *,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Edit only the inline keyboard of a previously sent message.
+
+        The message text (and its formatting entities) is left untouched, which
+        makes this the safe way to swap buttons — no need to reconstruct the
+        original text, which cannot be recovered from callback_query.message.text
+        (that field is plain text with HTML formatting stripped into entities).
+
+        Omitting reply_markup removes the keyboard, matching edit_message_text.
+
+        Returns True on success, False on failure (errors are logged, not raised).
+        """
+        bot = Bot(token=self.bot_token)
+        try:
+            await self._wait_for_rate_limit(chat_id)
+            await bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=message_id,
+                # PTB serializes a plain dict fine; opaque pass-through is deliberate
+                reply_markup=reply_markup,  # type: ignore[arg-type]
+            )
+            self._record_send(chat_id)
+            logger.debug(f"Reply markup of message {message_id} edited in chat {chat_id}")
+            return True
+        except TelegramError as e:
+            logger.error(
+                f"Telegram error editing reply markup of message {message_id} in chat {chat_id}: {e}"
+            )
+            return False
+        except Exception as e:
+            logger.error(
+                f"Unexpected error editing reply markup of message {message_id} in chat {chat_id}: {e}"
+            )
+            return False
+        finally:
+            await self._close_bot_session(bot)
+
+    def edit_message_reply_markup_sync(
+        self,
+        chat_id: str,
+        message_id: int,
+        *,
+        reply_markup: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Synchronously edit a message's inline keyboard, blocking until completion."""
+        return self._run_async_sync(
+            self.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=reply_markup,
+            ),
+            on_error=False,
+            error_label=f"edit_message_reply_markup_sync (chat_id={chat_id}, message_id={message_id})",
+        )
+
     async def answer_callback_query(
         self,
         callback_query_id: str,

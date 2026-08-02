@@ -57,6 +57,33 @@ class TestPrintWebhookInfo:
         captured = capsys.readouterr()
         assert 'Max connections: 40' in captured.out
 
+    def test_print_webhook_info_with_allowed_updates(self, capsys):
+        """Registered allowed_updates are listed."""
+        info = {
+            'url': 'https://example.com/webhook',
+            'has_custom_certificate': False,
+            'pending_update_count': 0,
+            'allowed_updates': ['message', 'callback_query']
+        }
+
+        print_webhook_info(info)
+
+        captured = capsys.readouterr()
+        assert 'Allowed updates: message, callback_query' in captured.out
+
+    def test_print_webhook_info_default_allowed_updates(self, capsys):
+        """With no allowed_updates registered, the Telegram default is described."""
+        info = {
+            'url': 'https://example.com/webhook',
+            'has_custom_certificate': False,
+            'pending_update_count': 0
+        }
+
+        print_webhook_info(info)
+
+        captured = capsys.readouterr()
+        assert 'Allowed updates: (Telegram default' in captured.out
+
     def test_print_webhook_info_not_set(self, capsys):
         """Test printing webhook info when URL is not set."""
         info = {
@@ -88,7 +115,71 @@ class TestCLIMain:
             main()
 
         assert exc_info.value.code == 0
-        mock_manager.set_webhook.assert_called_once_with('https://example.com/webhook')
+        mock_manager.set_webhook.assert_called_once_with(
+            'https://example.com/webhook',
+            allowed_updates=None,
+            secret_token=None,
+        )
+
+    @patch('byteforge_telegram.cli.WebhookManager')
+    @patch('sys.argv', ['prog', '--token', 'test_token', '--url', 'https://example.com/webhook',
+                        '--allowed-updates', 'message', 'callback_query',
+                        '--secret-token', 'my_secret'])
+    def test_set_webhook_with_allowed_updates_and_secret(self, mock_manager_class):
+        """--allowed-updates and --secret-token are forwarded to set_webhook."""
+        mock_manager = Mock()
+        mock_manager_class.return_value = mock_manager
+        mock_manager.set_webhook.return_value = {
+            'success': True,
+            'description': 'Webhook was set'
+        }
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 0
+        mock_manager.set_webhook.assert_called_once_with(
+            'https://example.com/webhook',
+            allowed_updates=['message', 'callback_query'],
+            secret_token='my_secret',
+        )
+
+    @patch('byteforge_telegram.cli.WebhookManager')
+    @patch('sys.argv', ['prog', '--token', 'test_token', '--url', 'https://example.com/webhook',
+                        '--allowed-updates'])
+    def test_set_webhook_bare_allowed_updates_resets(self, mock_manager_class):
+        """--allowed-updates with no values forwards [] (reset to Telegram's default)."""
+        mock_manager = Mock()
+        mock_manager_class.return_value = mock_manager
+        mock_manager.set_webhook.return_value = {
+            'success': True,
+            'description': 'Webhook was set'
+        }
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 0
+        mock_manager.set_webhook.assert_called_once_with(
+            'https://example.com/webhook',
+            allowed_updates=[],
+            secret_token=None,
+        )
+
+    @patch('byteforge_telegram.cli.WebhookManager')
+    @patch('sys.argv', ['prog', '--token', 'test_token',
+                        '--allowed-updates', 'message', 'callback_query'])
+    def test_allowed_updates_without_url_errors(self, mock_manager_class, capsys):
+        """--allowed-updates without --url exits with a targeted error, not silence."""
+        mock_manager = Mock()
+        mock_manager_class.return_value = mock_manager
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        assert 'require --url' in capsys.readouterr().out
+        mock_manager.set_webhook.assert_not_called()
 
     @patch('byteforge_telegram.cli.WebhookManager')
     @patch('sys.argv', ['prog', '--token', 'test_token', '--url', 'https://example.com/webhook'])

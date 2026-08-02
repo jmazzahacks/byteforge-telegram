@@ -91,6 +91,7 @@ source bin/activate && setup-telegram-webhook --token YOUR_TOKEN --info
   - `send_formatted` / `send_formatted_sync` - HTML-formatted title/fields/footer messages
   - `send_rich_message` / `send_rich_message_sync` - send a Rich Message (Bot API 10.1); see below
   - `edit_message_text` / `edit_message_text_sync` - edit a sent message's text and keyboard; omitting `reply_markup` strips an existing keyboard; text is not split (must fit 4096)
+  - `edit_message_reply_markup` / `edit_message_reply_markup_sync` - edit only the inline keyboard, leaving text and formatting untouched (the safe way to swap buttons — `callback_query.message.text` can't round-trip HTML); omitting `reply_markup` strips the keyboard, matching `edit_message_text`
   - `answer_callback_query` / `answer_callback_query_sync` - answer an inline-button tap (clears the button spinner; optional toast/alert text)
   - `test_connection` / `test_connection_sync` - verify the bot can reach a chat_id
 - Inline keyboard semantics: `reply_markup` is passed to the Bot API untouched (no typed keyboard models); when a long message is split into chunks, the keyboard attaches to the **last** chunk and the returned message_id is that last chunk's — always the right target for `edit_message_text`
@@ -108,6 +109,8 @@ source bin/activate && setup-telegram-webhook --token YOUR_TOKEN --info
 **WebhookManager** (`src/byteforge_telegram/webhook.py`)
 - Manages Telegram webhook configuration via REST API
 - Methods: `set_webhook()`, `get_webhook_info()`, `delete_webhook()`
+- `set_webhook` accepts `allowed_updates` and `secret_token`. Telegram semantics matter here: omitted `allowed_updates` means "keep the previous setting" (so a stale narrow set silently survives re-registration — this once locked a bot out of `callback_query`), while omitted `secret_token` CLEARS any existing secret. After a successful set, the effective `allowed_updates` is fetched via `get_webhook_info` and logged
+- CLI: `--allowed-updates message callback_query` and `--secret-token` flags on `setup-telegram-webhook`
 - Uses synchronous `requests` library
 - Validates HTTPS requirement for webhook URLs
 
@@ -244,9 +247,10 @@ src/byteforge_telegram/
 
 ## Version Management
 
-- Version is defined in `pyproject.toml` (currently 0.4.0)
+- Version is defined in `pyproject.toml` (currently 0.4.1)
 - Version must also be updated in `src/byteforge_telegram/__init__.py`
 - When bumping version, update both files to keep them in sync
+- `build-publish.sh` requires a clean working tree and, after a successful upload, tags the release (`v<version>`) and pushes the tag — a version bump is not a release until the tag exists
 
 ## HiveMake operational playbook (hm-playbook-vb1464b36)
 
